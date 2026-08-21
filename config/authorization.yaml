@@ -1,0 +1,16 @@
+# Authorization Policies and Signed Consent Records
+authorizations:
+  - id: "auth-default-local"
+    operator: "local-user"
+    organization: "Local Security Lab"
+    grant_type: "OWNER_AUTHORIZED"
+    effective_date: "2026-01-01T00:00:00Z"
+    expiry_date: "2030-12-31T23:59:59Z"
+    approved_scopes:
+      - "local-loopback"
+      - "lab-network"
+      - "test-domains"
+    rules:
+      allow_destructive: false
+      allow_dos_testing: false
+      require_confirmation_per_action: true

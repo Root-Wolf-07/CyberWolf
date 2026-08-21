@@ -1,0 +1,37 @@
+{
+  "title": "Unit Test Assessment",
+  "generated_at": "2026-08-20T14:35:23.510230",
+  "target": "test.local",
+  "disclaimer": "DISCLAIMER:\nThis report was generated from authorized security assessment activity.\nFindings should be manually validated before remediation or disclosure.\nCYBERWOLF is intended solely for authorized security assessment, defense, and research.",
+  "summary": {
+    "CRITICAL": 2,
+    "HIGH": 2,
+    "MEDIUM": 2,
+    "LOW": 0,
+    "INFO": 0,
+    "TOTAL": 6
+  },
+  "ai_executive_summary": "Assessment completed. Refer to individual findings for remediation priorities.",
+  "findings": [
+    {
+      "id": "CW-REP-TEST-0001",
+      "target": "test.local",
+      "asset_id": null,
+      "host_id": null,
+      "port": null,
+      "protocol": "tcp",
+      "service": null,
+      "vulnerability": "Missing Security Headers",
+      "cve": null,
+      "cwe": null,
+      "severity": "MEDIUM",
+      "confidence": "HIGH",
+      "evidence": "No HSTS header present",
+      "remediation": "Add Strict-Transport-Security",
+      "source_tool": "Web Engine",
+      "created_at": "2026-08-20 09:05:23",
+      "verified": 0,
+      "status": "OPEN"
+    }
+  ]
+}

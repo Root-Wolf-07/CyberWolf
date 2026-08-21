@@ -1,0 +1,21 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "cyberwolf"
+version = "1.0.0"
+description = "Local AI Cybersecurity Security Assistant & Command Center"
+readme = "README.md"
+requires-python = ">=3.9"
+authors = [
+    { name = "CYBERWOLF Team" }
+]
+dependencies = [
+    "rich>=13.0.0",
+    "pyyaml>=6.0",
+    "requests>=2.28.0"
+]
+
+[project.scripts]
+cyberwolf = "app.main:main"

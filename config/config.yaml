@@ -1,0 +1,54 @@
+# CYBERWOLF Configuration
+app:
+  name: "CYBERWOLF"
+  version: "1.0.0"
+  tagline: "Hunt Threats. Find Weaknesses. Defend Everything."
+
+ai:
+  provider: "ollama"
+  model: "qwen2.5-coder:1.5b"
+  fallback_models:
+    - "llama3.2:1b"
+    - "gemma4:26b"
+    - "gemma"
+    - "qwen2.5:0.5b"
+  base_url: "http://localhost:11434"
+  timeout: 60
+  temperature: 0.2
+  system_role: "CYBERWOLF Autonomous Cybersecurity Intelligence Engine"
+
+database:
+  type: "sqlite"
+  path: "./database/cyberwolf.db"
+  backup_dir: "./database/backups"
+
+security:
+  require_authorization: true
+  safe_mode: true
+  default_mode: "SAFE_SCAN"
+  confirmation_required: true
+  allowed_modes:
+    - "PASSIVE"
+    - "SAFE_SCAN"
+    - "ACTIVE_SCAN"
+    - "AUTHORIZED_PENTEST"
+    - "LAB_MODE"
+
+storage:
+  local_only: true
+  reports_dir: "./reports"
+  logs_dir: "./logs"
+  knowledge_dir: "./knowledge"
+
+logging:
+  enabled: true
+  level: "INFO"
+  file: "./logs/cyberwolf.log"
+  audit_file: "./logs/security/audit.log"
+  max_bytes: 10485760
+  backup_count: 5
+
+tools:
+  execution_timeout: 60
+  max_parallel_probes: 10
+  rate_limit_delay: 0.1

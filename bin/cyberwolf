@@ -1,0 +1,11 @@
+#!/usr/bin/env bash
+# CYBERWOLF Launcher Script
+
+DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." >/dev/null 2>&1 && pwd)"
+export PYTHONPATH="$DIR:$PYTHONPATH"
+
+if [ -f "$DIR/.venv/bin/python3" ]; then
+    exec "$DIR/.venv/bin/python3" "$DIR/app/main.py" "$@"
+else
+    exec python3 "$DIR/app/main.py" "$@"
+fi

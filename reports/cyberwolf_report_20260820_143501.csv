@@ -1,0 +1,2 @@
+Finding ID,Target,Severity,Vulnerability,Port,Protocol,Evidence,Remediation,Source Tool,Status
+CW-REP-TEST-0001,test.local,MEDIUM,Missing Security Headers,,tcp,No HSTS header present,Add Strict-Transport-Security,Web Engine,OPEN

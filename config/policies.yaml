@@ -1,0 +1,52 @@
+# Security and Safety Policy Rules
+policies:
+  modes:
+    PASSIVE:
+      description: "Non-intrusive observation, header checks, DNS queries, and passive traffic inspection."
+      intrusiveness: 0
+      allows_port_scan: false
+      allows_web_fuzzing: false
+      allows_sqli_probes: false
+      allows_exploit_validation: false
+
+    SAFE_SCAN:
+      description: "Standard port discovery, service detection, non-destructive vulnerability checks."
+      intrusiveness: 1
+      allows_port_scan: true
+      allows_web_fuzzing: false
+      allows_sqli_probes: true
+      allows_exploit_validation: false
+
+    ACTIVE_SCAN:
+      description: "In-depth service enumeration, directory discovery, configuration fuzzing."
+      intrusiveness: 2
+      allows_port_scan: true
+      allows_web_fuzzing: true
+      allows_sqli_probes: true
+      allows_exploit_validation: false
+
+    AUTHORIZED_PENTEST:
+      description: "Authorized penetration testing with controlled proof-of-concept validation."
+      intrusiveness: 3
+      allows_port_scan: true
+      allows_web_fuzzing: true
+      allows_sqli_probes: true
+      allows_exploit_validation: true
+
+    LAB_MODE:
+      description: "Dedicated security lab and CTF environment testing."
+      intrusiveness: 3
+      allows_port_scan: true
+      allows_web_fuzzing: true
+      allows_sqli_probes: true
+      allows_exploit_validation: true
+
+  rate_limits:
+    default_delay_ms: 50
+    max_concurrent_connections: 20
+
+  forbidden_actions:
+    - "raw_dos_flood"
+    - "destructive_payload_injection"
+    - "unauthorized_credential_destruction"
+    - "data_modification"

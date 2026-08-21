@@ -1,0 +1,62 @@
+[
+  {
+    "cve": "CVE-2021-44228",
+    "title": "Apache Log4j Remote Code Execution (Log4Shell)",
+    "cwe": "CWE-502",
+    "severity": "CRITICAL",
+    "cvss": 10.0,
+    "description": "JNDI lookup features do not protect against attacker-controlled LDAP and other JNDI related endpoints.",
+    "affected_services": ["log4j-core", "java-apps", "web-frameworks"],
+    "remediation": "Upgrade log4j-core to 2.17.1 or higher, set log4j2.formatMsgNoLookups=true, or remove JndiLookup class."
+  },
+  {
+    "cve": "CVE-2023-38606",
+    "title": "OpenSSH Privilege Separation Vulnerability",
+    "cwe": "CWE-287",
+    "severity": "HIGH",
+    "cvss": 8.1,
+    "description": "Flaw in OpenSSH pre-authentication process allowing potential bypass under specific conditions.",
+    "affected_services": ["openssh", "sshd"],
+    "remediation": "Update OpenSSH to the latest package version and enforce strict key-based authentication."
+  },
+  {
+    "cve": "CVE-2024-3094",
+    "title": "XZ Utils Backdoor",
+    "cwe": "CWE-506",
+    "severity": "CRITICAL",
+    "cvss": 10.0,
+    "description": "Malicious code discovered in upstream tarballs of xz utils leading to unauthorized authentication bypass via sshd.",
+    "affected_services": ["liblzma", "xz-utils", "sshd"],
+    "remediation": "Immediately downgrade or upgrade to clean xz version (e.g. 5.6.1-patch or 5.4.6)."
+  },
+  {
+    "cve": "CVE-2022-22965",
+    "title": "Spring Framework RCE (Spring4Shell)",
+    "cwe": "CWE-94",
+    "severity": "CRITICAL",
+    "cvss": 9.8,
+    "description": "Remote code execution in Spring Framework via DataBinder parameter binding under Tomcat deployment.",
+    "affected_services": ["spring-framework", "spring-boot", "tomcat"],
+    "remediation": "Upgrade Spring Framework to 5.3.18 / 5.2.20 or Spring Boot 2.6.6 / 2.5.12."
+  },
+  {
+    "cve": "CVE-2023-44487",
+    "title": "HTTP/2 Rapid Reset Denial of Service",
+    "cwe": "CWE-400",
+    "severity": "HIGH",
+    "cvss": 7.5,
+    "description": "HTTP/2 protocol allows stream cancellation abuse resulting in severe server resource exhaustion.",
+    "affected_services": ["nginx", "apache", "envoy", "cloudflare"],
+    "remediation": "Apply HTTP/2 rapid-reset mitigations or limit RST_STREAM frame rates per connection."
+  },
+  {
+    "cve": "CVE-2021-34527",
+    "title": "Windows Print Spooler RCE (PrintNightmare)",
+    "cwe": "CWE-269",
+    "severity": "HIGH",
+    "cvss": 8.8,
+    "description": "Improper privilege management in Windows Print Spooler service allows remote code execution.",
+    "affected_services": ["spoolsv.exe", "smb", "windows-rpc"],
+    "remediation": "Disable Print Spooler service on non-essential systems or apply Microsoft security updates."
+  }
+]

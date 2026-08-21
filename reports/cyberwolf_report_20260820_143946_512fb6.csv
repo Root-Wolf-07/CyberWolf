@@ -1,0 +1,2 @@
+Finding ID,Target,Severity,Vulnerability,Port,Protocol,Evidence,Remediation,Source Tool,Status
+CW-TEST-0001,127.0.0.1,HIGH,Test Exposure,,tcp,Test port 8080 open,Close port,Unit Test,OPEN
