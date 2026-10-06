@@ -1,0 +1,2 @@
+[console_scripts]
+cyberwolf = app.main:main

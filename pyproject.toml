@@ -26,3 +26,6 @@ dev = [
 
 [project.scripts]
 cyberwolf = "app.main:main"
+
+[tool.setuptools.packages.find]
+include = ["app*"]

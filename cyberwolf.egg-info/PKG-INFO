@@ -1,3 +1,18 @@
+Metadata-Version: 2.4
+Name: cyberwolf
+Version: 2.0.0
+Summary: CYBERWOLF V2 — Professional Cybersecurity Assessment & Intelligence Platform
+Author: CYBERWOLF Team
+Requires-Python: >=3.9
+Description-Content-Type: text/markdown
+Requires-Dist: rich>=13.0.0
+Requires-Dist: pyyaml>=6.0
+Requires-Dist: requests>=2.28.0
+Requires-Dist: reportlab>=4.0.0
+Provides-Extra: dev
+Requires-Dist: pytest>=7.0.0; extra == "dev"
+Requires-Dist: ruff>=0.1.0; extra == "dev"
+
 # CYBERWOLF V2 — Professional Cybersecurity Platform
 
 ```text

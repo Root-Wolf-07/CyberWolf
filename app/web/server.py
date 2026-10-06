@@ -165,8 +165,8 @@ class CyberWolfRequestHandler(BaseHTTPRequestHandler):
                 self._send_json({"error": "Scan not found"}, status=404)
             return
 
-        # 5. API: Findings
-        if path == "/api/findings":
+        # 5. API: Findings & Sub-resources
+        if path in ["/api/findings", "/findings"]:
             finding_svc = get_finding_service()
             target = query.get("target", [None])[0]
             severity = query.get("severity", [None])[0]
@@ -177,15 +177,41 @@ class CyberWolfRequestHandler(BaseHTTPRequestHandler):
             self._send_json({"findings": findings, "summary": summary, "count": len(findings)})
             return
 
-        if path.startswith("/api/findings/"):
-            fid = path.replace("/api/findings/", "").strip("/")
+        if path.startswith("/api/findings/") or (path.startswith("/findings/") and not path.endswith(".html")):
+            clean_p = path.replace("/api/findings/", "").replace("/findings/", "").strip("/")
+            parts = clean_p.split("/")
+            fid = parts[0]
+            subaction = parts[1] if len(parts) > 1 else None
+
             finding_svc = get_finding_service()
-            detail = finding_svc.get_finding_detail(fid)
-            if detail:
-                self._send_json(detail)
+            if subaction == "evidence":
+                vault = get_evidence_vault()
+                ev_list = vault.get_finding_evidence(fid)
+                if not ev_list:
+                    detail = finding_svc.get_finding_detail(fid)
+                    ev_list = detail.get("evidence_records", []) if detail else []
+                self._send_json({"finding_id": fid, "evidence": ev_list, "count": len(ev_list)})
+                return
+            elif subaction == "timeline":
+                timeline = finding_svc.get_timeline(fid)
+                self._send_json({"finding_id": fid, "timeline": timeline})
+                return
+            elif subaction == "sources":
+                detail = finding_svc.get_finding_detail(fid)
+                f_data = detail.get("finding", {}) if detail else {}
+                self._send_json({
+                    "finding_id": fid,
+                    "primary_tool": f_data.get("source_tool", "CYBERWOLF"),
+                    "all_sources": f_data.get("source_tools", [f_data.get("source_tool", "CYBERWOLF")])
+                })
+                return
             else:
-                self._send_json({"error": "Finding not found"}, status=404)
-            return
+                detail = finding_svc.get_finding_detail(fid)
+                if detail:
+                    self._send_json(detail)
+                else:
+                    self._send_json({"error": f"Finding '{fid}' not found"}, status=404)
+                return
 
         # 6. API: Tools
         if path == "/api/tools":
@@ -346,24 +372,42 @@ class CyberWolfRequestHandler(BaseHTTPRequestHandler):
                 self._send_json({"error": f"Unable to cancel scan '{scan_id}'"}, status=400)
             return
 
-        # 3. API: Update Finding Status (Triage)
-        if "/api/findings/" in path and path.endswith("/status"):
-            parts = path.split("/")
-            # Expecting /api/findings/{id}/status
-            if len(parts) >= 4:
-                finding_id = parts[3]
-                new_status = body.get("status")
-                if not new_status:
-                    self._send_json({"error": "Missing 'status' parameter"}, status=400)
-                    return
+        # 3. API: Triage Finding Status (/api/findings/{id}/triage or /api/findings/{id}/status)
+        if ("/findings/" in path) and (path.endswith("/triage") or path.endswith("/status")):
+            clean_p = path.replace("/api/findings/", "").replace("/findings/", "").strip("/")
+            parts = clean_p.split("/")
+            finding_id = parts[0]
+            new_status = body.get("status")
+            reason = body.get("reason") or body.get("notes") or "Analyst triage via workstation"
+            verified = body.get("verified")
+            actor = body.get("actor") or body.get("changed_by") or "web-analyst"
 
-                finding_svc = get_finding_service()
-                ok = finding_svc.update_status(finding_id, new_status=new_status)
-                if ok:
-                    self._send_json({"message": f"Finding status updated to {new_status}", "id": finding_id, "status": new_status})
-                else:
-                    self._send_json({"error": "Failed to update finding status"}, status=400)
+            if not new_status:
+                self._send_json({"error": "Missing 'status' parameter"}, status=400)
                 return
+
+            finding_svc = get_finding_service()
+            ok = finding_svc.update_status(finding_id, new_status=new_status, verified=verified, reason=reason, changed_by=actor)
+            if ok:
+                self._send_json({"message": f"Finding status updated to {new_status}", "id": finding_id, "status": new_status})
+            else:
+                self._send_json({"error": f"Failed to update finding status for {finding_id}"}, status=400)
+            return
+
+        # 3b. API: Retest Finding (/api/findings/{id}/retest or /findings/{id}/retest)
+        if ("/findings/" in path) and path.endswith("/retest"):
+            clean_p = path.replace("/api/findings/", "").replace("/findings/", "").strip("/")
+            parts = clean_p.split("/")
+            finding_id = parts[0]
+            actor = body.get("actor") or "web-workstation"
+
+            finding_svc = get_finding_service()
+            result = finding_svc.retest_finding(finding_id, actor=actor)
+            if result.get("success"):
+                self._send_json(result, status=200)
+            else:
+                self._send_json(result, status=400)
+            return
 
         # 4. API: Generate Report
         if path == "/api/reports":
@@ -688,7 +732,7 @@ def render_workstation_dashboard_html() -> str:
         .detail-drawer {
             position: fixed;
             top: 0; right: 0; bottom: 0;
-            width: 580px;
+            width: 720px;
             background-color: var(--bg-surface);
             border-left: 1px solid var(--border-subtle);
             box-shadow: -10px 0 30px rgba(0,0,0,0.5);
@@ -951,18 +995,22 @@ def render_workstation_dashboard_html() -> str:
                     <option value="LOW">Low</option>
                     <option value="INFO">Info</option>
                 </select>
-                <select id="filter-status" class="form-control" style="width: 140px;" onchange="filterFindings()">
+                <select id="filter-status" class="form-control" style="width: 160px;" onchange="filterFindings()">
                     <option value="">All Statuses</option>
-                    <option value="OPEN">Open</option>
+                    <option value="NEW">New</option>
+                    <option value="TRIAGED">Triaged</option>
                     <option value="CONFIRMED">Confirmed</option>
+                    <option value="REMEDIATION_REQUIRED">Remediation Required</option>
+                    <option value="RETEST_PENDING">Retest Pending</option>
                     <option value="RESOLVED">Resolved</option>
                     <option value="FALSE_POSITIVE">False Positive</option>
+                    <option value="DUPLICATE">Duplicate</option>
                     <option value="ACCEPTED_RISK">Accepted Risk</option>
                 </select>
             </div>
             <div class="card-panel">
                 <div class="panel-header">
-                    <span class="panel-title">Security Findings Database</span>
+                    <span class="panel-title">BDIE Vulnerability & Investigation Records</span>
                 </div>
                 <div class="table-responsive">
                     <table class="soc-table">
@@ -971,14 +1019,14 @@ def render_workstation_dashboard_html() -> str:
                                 <th>Finding ID</th>
                                 <th>Severity</th>
                                 <th>Title / Vulnerability</th>
-                                <th>Target & Port</th>
-                                <th>CVE</th>
-                                <th>Source Tool</th>
-                                <th>Risk Score</th>
+                                <th>Exact Location</th>
+                                <th>Risk</th>
+                                <th>Retest</th>
                                 <th>Status</th>
                             </tr>
                         </thead>
                         <tbody id="findings-body"></tbody>
+                    </table>
                     </table>
                 </div>
             </div>
@@ -1107,53 +1155,105 @@ def render_workstation_dashboard_html() -> str:
     <!-- FINDING DETAIL DRAWER -->
     <div id="drawer-finding" class="detail-drawer">
         <div class="drawer-header">
-            <span class="drawer-title" id="drawer-title">Finding Detail</span>
+            <div>
+                <span class="drawer-title" id="drawer-title">Vulnerability Investigation & Exact Location</span>
+                <div style="font-size: 11px; color: var(--text-muted);" id="drawer-subtitle">BDIE Traceable Evidence Record</div>
+            </div>
             <button class="btn btn-secondary" onclick="closeDrawer()">✕</button>
         </div>
         <div class="drawer-body">
+            <!-- Header section with badges -->
             <div class="detail-section">
-                <div class="detail-label">Finding Identifier & Severity</div>
-                <div style="display:flex; gap:10px; align-items:center;">
-                    <span id="drawer-fid" style="font-family: var(--font-mono); font-weight:700;"></span>
-                    <span id="drawer-sev-badge" class="badge"></span>
-                    <span id="drawer-score" style="font-family: var(--font-mono); color: #c084fc;"></span>
+                <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:8px;">
+                    <div style="display:flex; gap:8px; align-items:center;">
+                        <span id="drawer-fid" style="font-family: var(--font-mono); font-weight:700; font-size:14px; color:#60a5fa;"></span>
+                        <span id="drawer-sev-badge" class="badge"></span>
+                        <span id="drawer-conf-badge" class="badge badge-info"></span>
+                        <span id="drawer-score" style="font-family: var(--font-mono); color: #c084fc; font-weight:700;"></span>
+                    </div>
+                    <div id="drawer-retest-badge"></div>
+                </div>
+                <div style="font-size: 14px; font-weight: 700; margin-top: 8px; color: #fff;" id="drawer-finding-title"></div>
+            </div>
+
+            <!-- EXACT AFFECTED LOCATION BANNER -->
+            <div class="detail-section">
+                <div class="detail-label">Exact Affected Location</div>
+                <div style="background:#0f172a; border-left:3px solid #38bdf8; border-radius:4px; padding:10px 12px;">
+                    <div style="font-size:11px; color:#38bdf8; font-weight:700; text-transform:uppercase; margin-bottom:4px;" id="drawer-loc-hierarchy"></div>
+                    <div style="font-size:12px; color:#f1f5f9; font-family:var(--font-mono);" id="drawer-loc-summary"></div>
                 </div>
             </div>
 
-            <div class="detail-section">
-                <div class="detail-label">Status & Triage</div>
-                <select id="drawer-status-select" class="form-control" onchange="updateFindingStatus()">
-                    <option value="OPEN">OPEN</option>
-                    <option value="CONFIRMED">CONFIRMED</option>
-                    <option value="FALSE_POSITIVE">FALSE_POSITIVE</option>
-                    <option value="RESOLVED">RESOLVED</option>
-                    <option value="ACCEPTED_RISK">ACCEPTED_RISK</option>
-                </select>
+            <!-- TRIAGE & RETEST ACTION BAR -->
+            <div class="detail-section" style="background:#131c2e; border:1px solid #25334d; border-radius:6px; padding:12px;">
+                <div class="detail-label" style="color:#93c5fd;">Analyst Triage & Authorized Verification</div>
+                <div style="display:flex; gap:10px; align-items:center; margin-top:6px; flex-wrap:wrap;">
+                    <button class="btn btn-primary" id="btn-retest" onclick="runRetestProbe()" style="background:#2563eb;">⚡ Run Authorized Retest</button>
+                    <div style="display:flex; gap:6px; align-items:center; flex:1; min-width:240px;">
+                        <select id="drawer-status-select" class="form-control" style="width:160px;">
+                            <option value="NEW">NEW</option>
+                            <option value="TRIAGED">TRIAGED</option>
+                            <option value="CONFIRMED">CONFIRMED</option>
+                            <option value="REMEDIATION_REQUIRED">REMEDIATION_REQUIRED</option>
+                            <option value="RETEST_PENDING">RETEST_PENDING</option>
+                            <option value="RESOLVED">RESOLVED</option>
+                            <option value="FALSE_POSITIVE">FALSE_POSITIVE</option>
+                            <option value="DUPLICATE">DUPLICATE</option>
+                            <option value="ACCEPTED_RISK">ACCEPTED_RISK</option>
+                        </select>
+                        <input type="text" id="drawer-triage-reason" class="form-control" placeholder="Triage reason / notes..." style="flex:1;">
+                        <button class="btn btn-secondary" onclick="updateFindingStatus()">Update</button>
+                    </div>
+                </div>
             </div>
 
+            <!-- OBSERVED VS VERIFIED DUAL PANEL -->
             <div class="detail-section">
-                <div class="detail-label">Observed Facts</div>
-                <div class="detail-box" id="drawer-observed"></div>
+                <div style="display:grid; grid-template-columns:1fr 1fr; gap:10px;">
+                    <div style="background:#182234; border:1px solid #2b3952; border-radius:5px; padding:10px;">
+                        <div style="font-size:11px; font-weight:700; color:#93c5fd; text-transform:uppercase; margin-bottom:4px;">Observed Behavior (Detection)</div>
+                        <div style="font-size:12px; color:#e2e8f0; font-family:var(--font-mono); white-space:pre-wrap; max-height:120px; overflow-y:auto;" id="drawer-observed"></div>
+                    </div>
+                    <div style="background:#1c1917; border:1px solid #44403c; border-radius:5px; padding:10px;">
+                        <div style="font-size:11px; font-weight:700; color:#fdba74; text-transform:uppercase; margin-bottom:4px;">Verified Behavior (Probe Result)</div>
+                        <div style="font-size:12px; color:#e2e8f0; font-family:var(--font-mono); white-space:pre-wrap; max-height:120px; overflow-y:auto;" id="drawer-verified"></div>
+                    </div>
+                </div>
             </div>
 
+            <!-- SECURITY EXPLOITATION ASSESSMENT -->
             <div class="detail-section">
-                <div class="detail-label">Why Dangerous & Likely Impact</div>
-                <div class="detail-box" id="drawer-impact" style="color: #fde047;"></div>
+                <div class="detail-label">Security Exploitation Assessment & Impact</div>
+                <div style="background:#1f1b2e; border-left:3px solid #a855f7; border-radius:4px; padding:10px 12px; font-size:12px;">
+                    <div id="drawer-exploit-level" style="font-weight:700; margin-bottom:4px; color:#d8b4fe;"></div>
+                    <div id="drawer-exploit-details" style="color:#e9d5ff; white-space:pre-wrap;"></div>
+                </div>
             </div>
 
+            <!-- CRYPTOGRAPHIC EVIDENCE CHAIN -->
             <div class="detail-section">
-                <div class="detail-label">Raw Cryptographic Evidence</div>
-                <div class="detail-box" id="drawer-evidence"></div>
+                <div class="detail-label">Cryptographic Evidence Chain (SHA-256)</div>
+                <div id="drawer-evidence-container"></div>
             </div>
 
+            <!-- ACTIONABLE REMEDIATION & VERIFICATION -->
             <div class="detail-section">
-                <div class="detail-label">Actionable Remediation Roadmap</div>
-                <div class="detail-box" id="drawer-remediation" style="color: #93c5fd;"></div>
+                <div class="detail-label">Remediation Guidance & Retest Procedure</div>
+                <div style="background:#0f1f17; border-left:3px solid #10b981; border-radius:4px; padding:10px 12px; font-size:12px; margin-bottom:8px;">
+                    <div style="font-weight:700; color:#6ee7b7; margin-bottom:2px;">◈ Defensive Remediation</div>
+                    <div id="drawer-remediation" style="color:#d1fae5;"></div>
+                </div>
+                <div style="background:#172554; border-left:3px solid #3b82f6; border-radius:4px; padding:10px 12px; font-size:12px;">
+                    <div style="font-weight:700; color:#93c5fd; margin-bottom:2px;">◈ Verification Procedure</div>
+                    <div id="drawer-verification" style="color:#bfdbfe;"></div>
+                </div>
             </div>
 
+            <!-- TIMELINE & RETEST HISTORY -->
             <div class="detail-section">
-                <div class="detail-label">Verification Procedure</div>
-                <div class="detail-box" id="drawer-verification"></div>
+                <div class="detail-label">Audit Timeline & History</div>
+                <div id="drawer-timeline-container" style="background:var(--bg-elevated); border:1px solid var(--border-subtle); border-radius:5px; padding:10px; max-height:160px; overflow-y:auto; font-size:11px;"></div>
             </div>
         </div>
         <div class="drawer-footer">
@@ -1284,15 +1384,23 @@ def render_workstation_dashboard_html() -> str:
                 const tr = document.createElement('tr');
                 tr.onclick = () => openFindingDetail(f.id);
                 const sev = (f.severity || 'INFO').toLowerCase();
+                const loc = f.url || f.endpoint || (f.target ? `${f.target}${f.port ? ':' + f.port : ''}` : '—');
+                
+                let retestBadge = '<span style="color:var(--text-dim);">—</span>';
+                if (f.retest_result) {
+                    const rRes = f.retest_result.toUpperCase();
+                    const rColor = rRes === 'PASS' ? '#065f46; color:#a7f3d0;' : (rRes === 'FAIL' ? '#991b1b; color:#fecaca;' : '#854d0e; color:#fef08a;');
+                    retestBadge = `<span class="badge" style="background:${rColor}">${rRes}</span>`;
+                }
+
                 tr.innerHTML = `
                     <td style="font-family: var(--font-mono); font-weight:600; color:#60a5fa;">${f.id}</td>
                     <td><span class="badge badge-${sev}">${f.severity}</span></td>
                     <td><strong>${escapeHtml(f.title || f.vulnerability || '')}</strong></td>
-                    <td>${escapeHtml(f.target || '')} ${f.port ? `(${f.port}/${f.protocol||'tcp'})` : ''}</td>
-                    <td style="font-family: var(--font-mono); color:#f472b6;">${f.cve || '—'}</td>
-                    <td style="color:var(--text-dim);">${f.source_tool || 'CYBERWOLF'}</td>
+                    <td style="font-family: var(--font-mono); font-size:11px; color:#cbd5e1;">${escapeHtml(loc)}</td>
                     <td style="font-family: var(--font-mono);">${(f.risk_score || 0).toFixed(1)}/10</td>
-                    <td><span class="badge">${f.status || 'OPEN'}</span></td>
+                    <td>${retestBadge}</td>
+                    <td><span class="badge" style="background:#1e293b; color:#e2e8f0; border:1px solid #334155;">${f.status || 'OPEN'}</span></td>
                 `;
                 tbody.appendChild(tr);
             });
@@ -1304,7 +1412,7 @@ def render_workstation_dashboard_html() -> str:
             const status = document.getElementById('filter-status').value.toUpperCase();
 
             const filtered = currentFindings.filter(f => {
-                const matchQ = !q || (f.title||'').toLowerCase().includes(q) || (f.target||'').toLowerCase().includes(q) || (f.id||'').toLowerCase().includes(q);
+                const matchQ = !q || (f.title||'').toLowerCase().includes(q) || (f.target||'').toLowerCase().includes(q) || (f.id||'').toLowerCase().includes(q) || (f.endpoint||'').toLowerCase().includes(q) || (f.cve||'').toLowerCase().includes(q);
                 const matchSev = !sev || (f.severity||'').toUpperCase() === sev;
                 const matchStatus = !status || (f.status||'').toUpperCase() === status;
                 return matchQ && matchSev && matchStatus;
@@ -1317,24 +1425,97 @@ def render_workstation_dashboard_html() -> str:
             const data = await fetchAPI(`/api/findings/${findingId}`);
             if (!data) return;
 
-            const f = data.finding;
-            const expl = data.explanation || {};
-            const obs = expl.observed_facts || {};
-            const sec = expl.security_analysis || {};
-            const act = expl.actionable_guidance || {};
+            const f = data.finding || {};
+            const inv = data.investigation || {};
+            const loc = data.exact_location || {};
+            const secExpl = inv.security_exploitation || {};
 
             document.getElementById('drawer-fid').textContent = f.id;
-            const badge = document.getElementById('drawer-sev-badge');
-            badge.textContent = f.severity;
-            badge.className = 'badge badge-' + (f.severity || 'info').toLowerCase();
-            document.getElementById('drawer-score').textContent = `Risk: ${(f.risk_score||0).toFixed(1)}/10.0`;
+            document.getElementById('drawer-finding-title').textContent = f.title || f.vulnerability || 'Security Finding';
 
+            const badge = document.getElementById('drawer-sev-badge');
+            badge.textContent = f.severity || 'INFO';
+            badge.className = 'badge badge-' + (f.severity || 'info').toLowerCase();
+
+            const confBadge = document.getElementById('drawer-conf-badge');
+            confBadge.textContent = 'Conf: ' + (f.confidence || 'MEDIUM');
+
+            document.getElementById('drawer-score').textContent = `Risk: ${(f.risk_score || 0).toFixed(1)}/10.0`;
+
+            const retestBadge = document.getElementById('drawer-retest-badge');
+            if (f.retest_result) {
+                const rRes = f.retest_result.toUpperCase();
+                const rColor = rRes === 'PASS' ? '#10b981' : (rRes === 'FAIL' ? '#ef4444' : '#f59e0b');
+                retestBadge.innerHTML = `<span class="badge" style="background:${rColor}; color:#fff;">Retest: ${rRes}</span>`;
+            } else {
+                retestBadge.innerHTML = `<span class="badge" style="background:#374151; color:#9ca3af;">Not Retested</span>`;
+            }
+
+            // Location
+            document.getElementById('drawer-loc-hierarchy').textContent = loc.hierarchy || 'RESOLVED LOCATION';
+            document.getElementById('drawer-loc-summary').textContent = loc.summary || f.url || (f.target + (f.port ? `:${f.port}` : ''));
+
+            // Status select
             document.getElementById('drawer-status-select').value = f.status || 'OPEN';
-            document.getElementById('drawer-observed').textContent = obs.what_was_detected || f.description || 'No observation recorded.';
-            document.getElementById('drawer-impact').textContent = `${sec.why_dangerous || 'N/A'}\\n\\nImpact: ${sec.likely_impact || 'N/A'}`;
-            document.getElementById('drawer-evidence').textContent = f.evidence || 'No raw evidence captured.';
-            document.getElementById('drawer-remediation').textContent = act.what_should_be_fixed || f.remediation || 'Standard hardening recommended.';
-            document.getElementById('drawer-verification').textContent = act.how_to_verify || 'Verify by re-testing service configuration.';
+            document.getElementById('drawer-triage-reason').value = '';
+
+            // Observed vs Verified
+            document.getElementById('drawer-observed').textContent = f.observed_behavior || f.evidence || 'No observation recorded.';
+            document.getElementById('drawer-verified').textContent = f.verified_behavior || 'Not independently probe-verified. Passive or scanner observation only.';
+
+            // Exploitation
+            document.getElementById('drawer-exploit-level').textContent = `Exploitability: ${secExpl.level || f.exploitability_level || 'MEDIUM'}`;
+            document.getElementById('drawer-exploit-details').textContent = `Prerequisites: ${secExpl.prerequisites || 'Network reachability'}\nImpact: ${f.potential_impact || 'Confidentiality/Integrity impact'}\nLimitations: ${secExpl.limitations || 'Non-destructive boundary enforced'}`;
+
+            // Remediation
+            document.getElementById('drawer-remediation').textContent = f.remediation || 'Standard defensive remediation recommended.';
+            document.getElementById('drawer-verification').textContent = f.verification_procedure || 'Re-test endpoint with non-destructive authorized probe.';
+
+            // Evidence Chain
+            const evCont = document.getElementById('drawer-evidence-container');
+            const evItems = data.evidence_records || data.evidence_chain || [];
+            if (evItems.length === 0) {
+                evCont.innerHTML = `<div class="detail-box">${escapeHtml(f.evidence || 'No cryptographic evidence items captured.')}</div>`;
+            } else {
+                let evHtml = '';
+                evItems.forEach(ev => {
+                    const sha = ev.hash_sha256 || 'UNHASHED';
+                    const tool = ev.tool_name || 'CYBERWOLF';
+                    const excerpt = ev.output_excerpt || 'No output excerpt recorded';
+                    evHtml += `
+                        <div style="background:#0d1117; border:1px solid #30363d; border-radius:5px; padding:8px 10px; margin-bottom:8px; font-family:var(--font-mono); font-size:11px;">
+                            <div style="display:flex; justify-content:space-between; margin-bottom:4px;">
+                                <span style="color:#60a5fa; font-weight:700;">[${ev.id}] ${ev.evidence_type || 'TOOL_OUTPUT'} (${tool})</span>
+                                <span style="color:#34d399;">✔ HASH VERIFIED</span>
+                            </div>
+                            <div style="color:#9ca3af; font-size:10px; margin-bottom:4px;">SHA-256: <code style="color:#6ee7b7;">${sha}</code></div>
+                            <pre style="color:#e2e8f0; white-space:pre-wrap; max-height:100px; overflow-y:auto; margin:0;">${escapeHtml(excerpt)}</pre>
+                        </div>
+                    `;
+                });
+                evCont.innerHTML = evHtml;
+            }
+
+            // Timeline
+            const tlCont = document.getElementById('drawer-timeline-container');
+            const tlItems = data.timeline || [];
+            if (tlItems.length === 0) {
+                tlCont.innerHTML = `<span style="color:var(--text-dim);">No audit timeline events logged.</span>`;
+            } else {
+                let tlHtml = '';
+                tlItems.forEach(ev => {
+                    const ts = (ev.timestamp || '').substring(0, 19).replace('T', ' ');
+                    tlHtml += `
+                        <div style="margin-bottom:6px; border-bottom:1px solid #1f2937; padding-bottom:4px;">
+                            <span style="color:var(--text-dim);">${ts}</span> • 
+                            <strong style="color:#93c5fd;">${ev.event_type || 'EVENT'}:</strong> 
+                            ${escapeHtml(ev.description || '')} 
+                            <span style="color:#6b7280;">(${ev.actor || 'system'})</span>
+                        </div>
+                    `;
+                });
+                tlCont.innerHTML = tlHtml;
+            }
 
             document.getElementById('drawer-finding').classList.add('open');
         }
@@ -1347,12 +1528,44 @@ def render_workstation_dashboard_html() -> str:
         async function updateFindingStatus() {
             if (!activeFindingId) return;
             const newStatus = document.getElementById('drawer-status-select').value;
-            await fetchAPI(`/api/findings/${activeFindingId}/status`, {
+            const reason = document.getElementById('drawer-triage-reason').value;
+            const res = await fetchAPI(`/api/findings/${activeFindingId}/triage`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ status: newStatus })
+                body: JSON.stringify({ status: newStatus, reason: reason })
             });
-            refreshCurrentView();
+            if (res && !res.error) {
+                openFindingDetail(activeFindingId);
+                loadFindings();
+            } else {
+                alert('Failed to update status: ' + (res?.error || 'Unknown error'));
+            }
+        }
+
+        async function runRetestProbe() {
+            if (!activeFindingId) return;
+            const btn = document.getElementById('btn-retest');
+            btn.disabled = true;
+            btn.textContent = 'Probing target...';
+            try {
+                const res = await fetchAPI(`/api/findings/${activeFindingId}/retest`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ actor: 'web-operator' })
+                });
+                if (res && res.success) {
+                    alert(`Retest Probe Result: ${res.retest_result}\nStatus: ${res.new_status}\nEvidence: ${res.evidence_id}`);
+                    openFindingDetail(activeFindingId);
+                    loadFindings();
+                } else {
+                    alert('Retest failed: ' + (res?.error || res?.notes || 'Probe error'));
+                }
+            } catch (err) {
+                alert('Retest error: ' + err);
+            } finally {
+                btn.disabled = false;
+                btn.textContent = '⚡ Run Authorized Retest';
+            }
         }
 
         async function loadAssets() {

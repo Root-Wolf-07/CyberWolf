@@ -91,6 +91,11 @@ class RiskEngine:
         result = self.score_finding(finding, asset_criticality=asset_criticality)
         return float(result.get("score", 0.0))
 
+    def calculate_risk(self, finding: Finding, asset_criticality: float = 1.0) -> Tuple[float, Dict[str, Any]]:
+        """Compute and return tuple (score, factors) for a finding."""
+        result = self.score_finding(finding, asset_criticality=asset_criticality)
+        return float(result.get("score", 0.0)), result.get("factors", {})
+
     def score_findings_batch(self, findings: List[Finding]) -> List[Finding]:
         """Score an entire list of findings in-place."""
         for f in findings:

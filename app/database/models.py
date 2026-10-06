@@ -53,13 +53,21 @@ class ConfidenceLevel:
 
 
 class FindingStatus:
-    OPEN = "OPEN"
+    NEW = "NEW"
+    OPEN = "OPEN"  # Backward compatibility
+    TRIAGED = "TRIAGED"
     CONFIRMED = "CONFIRMED"
-    FALSE_POSITIVE = "FALSE_POSITIVE"
+    REMEDIATION_REQUIRED = "REMEDIATION_REQUIRED"
+    RETEST_PENDING = "RETEST_PENDING"
     RESOLVED = "RESOLVED"
+    FALSE_POSITIVE = "FALSE_POSITIVE"
+    DUPLICATE = "DUPLICATE"
     ACCEPTED_RISK = "ACCEPTED_RISK"
 
-    ALL = [OPEN, CONFIRMED, FALSE_POSITIVE, RESOLVED, ACCEPTED_RISK]
+    ALL = [
+        NEW, OPEN, TRIAGED, CONFIRMED, REMEDIATION_REQUIRED,
+        RETEST_PENDING, RESOLVED, FALSE_POSITIVE, DUPLICATE, ACCEPTED_RISK
+    ]
 
     @classmethod
     def normalize(cls, val: Optional[str]) -> str:
@@ -67,6 +75,41 @@ class FindingStatus:
             return cls.OPEN
         upper = val.strip().upper().replace(" ", "_")
         return upper if upper in cls.ALL else cls.OPEN
+
+
+class EvidenceType:
+    NETWORK_SCAN = "NETWORK_SCAN"
+    HTTP_REQUEST = "HTTP_REQUEST"
+    HTTP_RESPONSE = "HTTP_RESPONSE"
+    SERVICE_DETECTION = "SERVICE_DETECTION"
+    CONFIGURATION = "CONFIGURATION"
+    TOOL_OUTPUT = "TOOL_OUTPUT"
+    PACKET_METADATA = "PACKET_METADATA"
+    SOURCE_CODE = "SOURCE_CODE"
+    MANUAL_OBSERVATION = "MANUAL_OBSERVATION"
+
+    ALL = [
+        NETWORK_SCAN, HTTP_REQUEST, HTTP_RESPONSE, SERVICE_DETECTION,
+        CONFIGURATION, TOOL_OUTPUT, PACKET_METADATA, SOURCE_CODE, MANUAL_OBSERVATION
+    ]
+
+
+class RetestResult:
+    PASS = "PASS"
+    FAIL = "FAIL"
+    INCONCLUSIVE = "INCONCLUSIVE"
+    PENDING = "PENDING"
+
+    ALL = [PASS, FAIL, INCONCLUSIVE, PENDING]
+
+
+class ExploitabilityLevel:
+    LOW = "LOW"
+    MEDIUM = "MEDIUM"
+    HIGH = "HIGH"
+    CONFIRMED = "CONFIRMED"
+
+    ALL = [LOW, MEDIUM, HIGH, CONFIRMED]
 
 
 class ScanStatus:
@@ -153,7 +196,7 @@ class PortRecord:
 
 @dataclass
 class Finding:
-    """Canonical internal data model for all security findings."""
+    """Canonical internal data model for all security findings (BDIE V2)."""
     id: str
     target: str
     vulnerability: str = ""
@@ -168,12 +211,15 @@ class Finding:
     port: Optional[int] = None
     protocol: str = "tcp"
     service: Optional[str] = None
+    service_version: Optional[str] = None
     cve: Optional[str] = None
     cve_ids: List[str] = field(default_factory=list)
     cwe: Optional[str] = None
     cwe_ids: List[str] = field(default_factory=list)
     owasp_category: Optional[str] = None
+    cvss: Optional[float] = None
     evidence: str = ""
+    evidence_ids: List[str] = field(default_factory=list)
     source_tool: str = ""
     source_tools: List[str] = field(default_factory=list)
     remediation: Optional[str] = None
@@ -183,10 +229,46 @@ class Finding:
     first_seen: Optional[str] = None
     last_seen: Optional[str] = None
     created_at: Optional[str] = None
+    updated_at: Optional[str] = None
+    resolved_at: Optional[str] = None
+    last_verified: Optional[str] = None
     verified: bool = False
     status: str = FindingStatus.OPEN
+    # BDIE Exact Location
+    url: Optional[str] = None
+    http_method: Optional[str] = None
+    endpoint: Optional[str] = None
+    parameter: Optional[str] = None
+    component: Optional[str] = None
+    technology: Optional[str] = None
+    config_area: Optional[str] = None
+    config_setting: Optional[str] = None
+    config_observed: Optional[str] = None
+    config_expected: Optional[str] = None
+    source_file: Optional[str] = None
+    source_line: Optional[int] = None
+    source_function: Optional[str] = None
+    source_commit: Optional[str] = None
+    # BDIE Investigation & Behavior
+    observed_behavior: Optional[str] = None
+    verified_behavior: Optional[str] = None
+    potential_impact: Optional[str] = None
+    exploitability: Optional[str] = None
+    exploitability_level: Optional[str] = None
+    exploit_prerequisites: Optional[str] = None
+    exploit_limitations: Optional[str] = None
+    # BDIE Retest & Traceability
+    retest_status: Optional[str] = None
+    retest_result: Optional[str] = None
+    verification_procedure: Optional[str] = None
+    scan_id: Optional[str] = None
+    tool_run_id: Optional[str] = None
 
     def __post_init__(self):
+        if self.exploitability_level and not self.exploitability:
+            self.exploitability = self.exploitability_level
+        elif self.exploitability and not self.exploitability_level:
+            self.exploitability_level = self.exploitability
         # Synchronize title and vulnerability fields for full backward compatibility
         if not self.title and self.vulnerability:
             self.title = self.vulnerability
@@ -232,6 +314,12 @@ class Finding:
             self.first_seen = self.created_at
         if not self.last_seen:
             self.last_seen = now_iso
+        if not self.updated_at:
+            self.updated_at = self.last_seen
+
+        # Default observed behavior if not specified
+        if not self.observed_behavior and self.evidence:
+            self.observed_behavior = self.evidence
 
         # Normalization
         self.severity = SeverityLevel.normalize(self.severity)
@@ -258,7 +346,7 @@ class Finding:
 
 @dataclass
 class Evidence:
-    """Structured, cryptographically verifiable evidence model."""
+    """Structured, cryptographically verifiable evidence model (BDIE V2)."""
     id: str
     target: str
     tool_name: str
@@ -272,10 +360,56 @@ class Evidence:
     http_metadata: Dict[str, Any] = field(default_factory=dict)
     scanner_result: Dict[str, Any] = field(default_factory=dict)
     hash_sha256: Optional[str] = None
+    evidence_type: str = EvidenceType.TOOL_OUTPUT
+    request_data: Dict[str, Any] = field(default_factory=dict)
+    response_data: Dict[str, Any] = field(default_factory=dict)
+    observed_data: Dict[str, Any] = field(default_factory=dict)
+    tool_run_id: Optional[str] = None
 
     def __post_init__(self):
         if not self.timestamp:
             self.timestamp = datetime.now().isoformat()
+
+    def to_dict(self) -> Dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass
+class FindingRetest:
+    """Record of a safe, authorized vulnerability re-test verification."""
+    id: str
+    finding_id: str
+    scan_id: Optional[str] = None
+    evidence_id: Optional[str] = None
+    test_type: str = "PROBE_REVERIFICATION"
+    result: str = RetestResult.PENDING  # PASS, FAIL, INCONCLUSIVE
+    details: str = ""
+    retested_by: str = "CYBERWOLF BDIE"
+    timestamp: Optional[str] = None
+
+    def __post_init__(self):
+        if not self.timestamp:
+            self.timestamp = datetime.now().isoformat()
+        self.result = self.result.upper() if self.result else RetestResult.PENDING
+
+    def to_dict(self) -> Dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass
+class FindingStatusHistory:
+    """Audit log entry for finding status transitions."""
+    id: Optional[int]
+    finding_id: str
+    old_status: str
+    new_status: str
+    reason: Optional[str] = None
+    changed_by: str = "ANALYST"
+    changed_at: Optional[str] = None
+
+    def __post_init__(self):
+        if not self.changed_at:
+            self.changed_at = datetime.now().isoformat()
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)

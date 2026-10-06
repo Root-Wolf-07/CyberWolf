@@ -81,7 +81,7 @@ def build_parser() -> argparse.ArgumentParser:
     # findings / finding
     for f_cmd in ["findings", "finding"]:
         fp = subparsers.add_parser(f_cmd, help="Vulnerability findings inventory and analysis")
-        fp.add_argument("action", nargs="?", default="list", help="Action: list, show <id>, or explain <id>")
+        fp.add_argument("action", nargs="?", default="list", help="Action: list, show <id>, search, evidence <id>, timeline <id>, retest <id>, explain <id>")
         fp.add_argument("finding_id", nargs="?", default=None, help="Finding ID (e.g. CW-NET-0001)")
         fp.add_argument("--target", "-t", type=str, help="Filter by target host")
         fp.add_argument("--severity", "-s", type=str, help="Filter by severity (CRITICAL, HIGH, MEDIUM, LOW, INFO)")
@@ -233,7 +233,15 @@ def main():
             handle_findings(action="show", finding_id=fid)
         elif action == "explain":
             handle_findings(action="explain", finding_id=fid)
-        elif action and action.startswith("CW-"):
+        elif action == "evidence":
+            handle_findings(action="evidence", finding_id=fid)
+        elif action == "timeline":
+            handle_findings(action="timeline", finding_id=fid)
+        elif action == "retest":
+            handle_findings(action="retest", finding_id=fid)
+        elif action == "search":
+            handle_findings(action="search", query=fid, target=args.target, severity=args.severity, status=args.status, cve=args.cve)
+        elif action and (action.startswith("CW-") or action.startswith("BUG-")):
             # Direct ID shorthand: cyberwolf findings CW-NET-0001
             handle_findings(action="show", finding_id=action)
         else:

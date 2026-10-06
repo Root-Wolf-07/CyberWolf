@@ -219,38 +219,143 @@ To ensure evidentiary integrity for incident response and formal audits:
 
 ---
 
-## 8. Reporting Subsystem (`app/reports/generator.py`)
+## 8. Bug Discovery & Investigation Engine (BDIE)
 
-Produces client-ready security assessment deliverables:
-- **JSON**: Machine-readable, full fidelity export of scans, assets, findings, and evidence.
-- **CSV**: Spreadsheet-compatible vulnerability tracking table.
-- **Plain Text**: Terminal-formatted summary for CLI output or incident ticketing systems.
-- **HTML Deliverable**: High-density, professional dark-mode SOC report featuring executive summaries, risk breakdowns, expandable finding cards, evidence viewers, and remediation tabs.
-- **PDF Deliverable**: Multi-page formal assessment document built with ReportLab, featuring:
-  - Cover page and executive summary
-  - Risk metric summary tables
-  - Detailed findings categorized by severity
-  - Cryptographic evidence citations
-  - Automatic page numbering and running headers
+The **Bug Discovery & Investigation Engine (BDIE)** transforms raw scanner alerts into evidence-backed, forensic-grade vulnerability investigations.
+
+```
+Authorized Target
+       ↓
+Scope Validation
+       ↓
+Asset Discovery
+       ↓
+Service Discovery
+       ↓
+Web/Application Discovery
+       ↓
+Vulnerability Detection
+       ↓
+Result Collection & Normalization
+       ↓
+Finding Correlation & Deduplication
+       ↓
+Evidence Validation (SHA-256)
+       ↓
+Risk Assessment (Explainable Formula)
+       ↓
+Investigation Layer (Observed vs Verified)
+       ↓
+Finding Creation & Lifecycle Management
+       ↓
+Remediation & Verification Procedures
+       ↓
+Authorized Retest
+       ↓
+Verified Resolution
+```
 
 ---
 
-## 9. Database Architecture & Migrations
+## 9. Exact Location Engine (`app/detection/exact_location.py`)
 
-CYBERWOLF uses a local SQLite database configured with **WAL (Write-Ahead Logging)** mode for high-concurrency read/write operations without locking.
+Pinpoints the exact affected asset location with evidence-backed precision. Locations are represented as strict hierarchies without fabrication:
 
-### 9.1 Schema Migrations (`app/database/migrations.py`)
-Schema evolution is managed via an idempotent, version-tracked migration engine. The `schema_migrations` table tracks applied versions:
-- `v1_initial_core`: Base scans, findings, targets, and events.
-- `v2_canonical_platform`: Normalized assets, canonical findings, evidence vault, tool runs, reports, and policies.
-- `v3_indexes_and_integrity`: Performance B-tree indexes across `asset_id`, `host`, `scan_id`, `severity`, `status`, and `cve`.
+### 9.1 Web Application Location
+$$\text{Domain} \to \text{Scheme} \to \text{Hostname} \to \text{Port} \to \text{URL} \to \text{HTTP Method} \to \text{Endpoint} \to \text{Parameter}$$
 
-Database upgrades never destroy user data. Safe backups are created via `cyberwolf database backup`.
+### 9.2 Network Infrastructure Location
+$$\text{Asset} \to \text{IP Address} \to \text{Port} \to \text{Protocol} \to \text{Service} \to \text{Version}$$
+
+### 9.3 Configuration Location
+$$\text{Host} \to \text{Configuration Area} \to \text{Setting} \to \text{Observed Value} \to \text{Expected Secure State}$$
+
+### 9.4 Source Code Location
+$$\text{Repository} \to \text{Commit/Branch} \to \text{File} \to \text{Class} \to \text{Function} \to \text{Line}$$
 
 ---
 
-## 10. Web Workstation & REST API (`app/web/server.py`)
+## 10. Vulnerability Investigation & Exploitation Assessment (`app/intelligence/investigation.py`)
+
+Every finding undergoes structured forensic decomposition:
+- **Observed Behavior**: Factual output captured by scanners or probes.
+- **Verified Behavior**: Confirmed presence demonstrated during authorized testing; explicitly states lack of active verification when unconfirmed.
+- **Security Impact**: Realistic business and technical consequences (confidentiality, integrity, availability).
+- **Exploitation Assessment**: Evidence-based exploitability level (`LOW`, `MEDIUM`, `HIGH`, `CONFIRMED`), network and authentication prerequisites, attack surface, and non-destructive defensive testing limitations.
+- **Knowledge Grounding**: Strictly maps verified CVE, CWE, and OWASP Top 10 records without hallucinating non-existent vulnerability entries.
+
+---
+
+## 11. Finding Status Lifecycle & Retesting System (`app/services/retest_service.py`)
+
+### 11.1 Lifecycle State Machine
+```
+NEW ──> TRIAGED ──> CONFIRMED ──> REMEDIATION_REQUIRED ──> RETEST_PENDING ──> RESOLVED
+ │          │
+ ├──> FALSE_POSITIVE
+ ├──> DUPLICATE
+ └──> ACCEPTED_RISK
+```
+Every status change persists an immutable audit log record in `finding_status_history`.
+
+### 11.2 Retesting Workflow
+1. **Target Authorization**: Verifies target is enrolled in an authorized scope via `TargetAuthorizer`.
+2. **Targeted Probe**: Dispatches non-destructive HTTP, TLS, or socket probes to verify remediation.
+3. **Cryptographic Proof**: Captures probe request/response into `EvidenceVault` with SHA-256 hash.
+4. **State Transition**:
+   - `PASS` $\to$ Automatically transitions finding status to `RESOLVED` and sets `resolved_at`.
+   - `FAIL` $\to$ Transitions finding status to `REMEDIATION_REQUIRED`.
+   - `INCONCLUSIVE` $\to$ Transitions finding status to `RETEST_PENDING`.
+
+---
+
+## 12. Standardized 21-Section Reporting Subsystem (`app/reports/generator.py`)
+
+All generated deliverables comply with the canonical 21-section structure:
+1. Executive Summary
+2. Assessment Scope
+3. Authorization & Scope Validation
+4. Assessment Timeline
+5. Asset Inventory
+6. Attack Surface
+7. Risk Summary
+8. Vulnerability Summary
+9. Detailed Findings
+10. Exact Locations
+11. Evidence
+12. Observed Behavior
+13. Verified Behavior
+14. Security Impact
+15. Exploitability Assessment
+16. CVE/CWE/OWASP Mapping
+17. Remediation
+18. Verification & Retesting
+19. Tool Execution History
+20. Evidence Integrity
+21. Final Risk Summary
+
+Supported formats:
+- **JSON**: Canonical 21-section structured schema.
+- **CSV**: Spreadsheet export including Exact Location and SHA-256 evidence digests.
+- **HTML Deliverable**: High-density, professional dark-mode SOC Analyst workstation report.
+- **PDF Deliverable**: Multi-page formal assessment document built with ReportLab.
+
+---
+
+## 13. Database Architecture & Migrations
+
+CYBERWOLF uses a local SQLite database configured with **WAL (Write-Ahead Logging)** mode.
+
+### 13.1 Schema Migrations (`app/database/migrations.py`)
+- `001_initial_core`: Base scans, findings, targets, and events.
+- `002_canonical_platform`: Normalized assets, canonical findings, evidence vault, tool runs, reports, and policies.
+- `003_indexes_and_integrity`: Performance B-tree indexes across assets, hosts, scans, severities, and CVEs.
+- `004_bdie_vulnerability_engine`: BDIE exact location columns, observed/verified behavior, exploitation assessment, `finding_retests`, and `finding_status_history` tables.
+
+---
+
+## 14. Web Workstation & REST API (`app/web/server.py`)
 
 A zero-dependency HTTP service built on Python's `http.server.ThreadingHTTPServer`:
-- **Decoupled Architecture**: Routes invoke `ScanService`, `FindingService`, and `AssetService`; no scanning or business logic lives in HTTP handlers.
-- **SOC Analyst Workstation**: Clean, density-optimized interface prioritizing operational visibility, live scan telemetry, finding triage (`CONFIRMED`, `FALSE_POSITIVE`, `RESOLVED`), and evidence inspection.
+- **Decoupled Architecture**: Routes invoke `ScanService`, `FindingService`, `AssetService`, and `RetestService`.
+- **SOC Analyst Workstation**: Interactive drawer with Exact Location hierarchy banner, Observed vs Verified dual panel, Security Exploitation Assessment, Cryptographic Evidence Vault with SHA-256 badges, Actionable Remediation, Audit Timeline, Status Triage selector, and interactive "⚡ Run Authorized Retest" button.

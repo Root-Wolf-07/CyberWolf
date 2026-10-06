@@ -94,3 +94,18 @@ class PolicyEngine:
                 return False, f"Active scanner '{tool_name}' is not permitted in PASSIVE observation mode."
 
         return True, f"Tool '{tool_name}' allowed under {active_policy.name} policy."
+
+    def get_policy(self) -> Policy:
+        """Alias for get_active_policy."""
+        return self.get_active_policy()
+
+
+_POLICY_ENGINE: Optional[PolicyEngine] = None
+
+
+def get_policy_engine() -> PolicyEngine:
+    """Return singleton instance of PolicyEngine."""
+    global _POLICY_ENGINE
+    if _POLICY_ENGINE is None:
+        _POLICY_ENGINE = PolicyEngine()
+    return _POLICY_ENGINE

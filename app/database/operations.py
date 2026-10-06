@@ -20,7 +20,8 @@ from app.database.db_manager import get_db
 from app.database.models import (
     Finding, HostRecord, PortRecord, ScanRecord, Asset,
     Evidence, ToolRun, ReportRecord, AuditEvent,
-    SeverityLevel, ConfidenceLevel, FindingStatus, ScanStatus
+    SeverityLevel, ConfidenceLevel, FindingStatus, ScanStatus,
+    FindingRetest, FindingStatusHistory, EvidenceType, RetestResult
 )
 from app.core.logger import get_logger
 
@@ -265,30 +266,57 @@ def upsert_port(host_id: int, port_number: int, protocol: str = "tcp",
 # ---------------------------------------------------------------------------
 
 def create_finding(finding: Finding) -> str:
-    """Store or update a normalized security finding."""
+    """Store or update a normalized security finding (BDIE V2)."""
     db = get_db()
+    now_iso = datetime.now().isoformat()
     with db.get_connection() as conn:
         conn.execute("""
             INSERT OR REPLACE INTO findings (
-                id, target, asset_id, host_id, port, protocol, service,
+                id, target, asset_id, host_id, port, protocol, service, service_version,
                 vulnerability, title, description, category, host,
-                cve, cve_ids, cwe, cwe_ids, owasp_category,
-                severity, confidence, evidence, remediation, source_tool,
-                risk_score, risk_factors, first_seen, last_seen, created_at,
-                verified, status
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                cve, cve_ids, cwe, cwe_ids, owasp_category, cvss,
+                severity, confidence, evidence, evidence_ids, remediation, source_tool,
+                risk_score, risk_factors, first_seen, last_seen, created_at, updated_at,
+                resolved_at, last_verified, verified, status,
+                url, http_method, endpoint, parameter, component, technology,
+                config_area, config_setting, config_observed, config_expected,
+                source_file, source_line, source_function, source_commit,
+                observed_behavior, verified_behavior, potential_impact,
+                exploitability, exploit_prerequisites, exploit_limitations,
+                retest_status, retest_result, scan_id, tool_run_id
+            ) VALUES (
+                ?, ?, ?, ?, ?, ?, ?, ?,
+                ?, ?, ?, ?, ?,
+                ?, ?, ?, ?, ?, ?,
+                ?, ?, ?, ?, ?, ?,
+                ?, ?, ?, ?, ?, ?,
+                ?, ?, ?, ?,
+                ?, ?, ?, ?, ?, ?,
+                ?, ?, ?, ?,
+                ?, ?, ?, ?,
+                ?, ?, ?,
+                ?, ?, ?,
+                ?, ?, ?, ?
+            )
         """, (
             finding.id, finding.target, finding.asset_id, finding.host_id,
-            finding.port, finding.protocol, finding.service,
+            finding.port, finding.protocol, finding.service, finding.service_version,
             finding.vulnerability, finding.title or finding.vulnerability,
             finding.description or finding.evidence, finding.category, finding.host or finding.target,
-            finding.cve, json.dumps(finding.cve_ids),
-            finding.cwe, json.dumps(finding.cwe_ids), finding.owasp_category,
+            finding.cve, json.dumps(finding.cve_ids or []),
+            finding.cwe, json.dumps(finding.cwe_ids or []), finding.owasp_category, finding.cvss,
             finding.severity.upper(), finding.confidence.upper(),
-            finding.evidence, finding.remediation,
-            finding.source_tool, finding.risk_score, json.dumps(finding.risk_factors),
-            finding.first_seen, finding.last_seen, finding.created_at,
-            1 if finding.verified else 0, finding.status
+            finding.evidence, json.dumps(finding.evidence_ids or []), finding.remediation,
+            finding.source_tool, finding.risk_score, json.dumps(finding.risk_factors or {}),
+            finding.first_seen, finding.last_seen, finding.created_at, finding.updated_at or now_iso,
+            finding.resolved_at, finding.last_verified, 1 if finding.verified else 0, finding.status,
+            finding.url, finding.http_method, finding.endpoint, finding.parameter,
+            finding.component, finding.technology,
+            finding.config_area, finding.config_setting, finding.config_observed, finding.config_expected,
+            finding.source_file, finding.source_line, finding.source_function, finding.source_commit,
+            finding.observed_behavior or finding.evidence, finding.verified_behavior, finding.potential_impact,
+            finding.exploitability, finding.exploit_prerequisites, finding.exploit_limitations,
+            finding.retest_status, finding.retest_result, finding.scan_id, finding.tool_run_id
         ))
 
         # Record source tool provenance
@@ -303,41 +331,145 @@ def create_finding(finding: Finding) -> str:
 
 
 def get_finding(finding_id: str) -> Optional[Dict[str, Any]]:
-    """Retrieve finding by ID with all sources and evidence."""
+    """Retrieve finding by ID with all sources, evidence, retests, and history."""
     db = get_db()
     with db.get_connection() as conn:
         row = conn.execute("SELECT * FROM findings WHERE id = ?", (finding_id,)).fetchone()
         if not row:
             return None
         d = dict(row)
+
+        # Parse JSON fields safely
+        for json_field in ["cve_ids", "cwe_ids", "evidence_ids", "risk_factors"]:
+            if isinstance(d.get(json_field), str):
+                try:
+                    d[json_field] = json.loads(d[json_field])
+                except Exception:
+                    pass
+
         # Fetch sources
         sources_rows = conn.execute(
             "SELECT tool_name, discovered_at FROM finding_sources WHERE finding_id = ?",
             (finding_id,)
         ).fetchall()
         d["source_tools"] = [r["tool_name"] for r in sources_rows] if sources_rows else [d.get("source_tool", "CYBERWOLF")]
+
+        # Fetch retests and status history
+        retests_rows = conn.execute(
+            "SELECT * FROM finding_retests WHERE finding_id = ? ORDER BY timestamp DESC",
+            (finding_id,)
+        ).fetchall()
+        d["retests"] = [dict(r) for r in retests_rows]
+
+        history_rows = conn.execute(
+            "SELECT * FROM finding_status_history WHERE finding_id = ? ORDER BY changed_at ASC",
+            (finding_id,)
+        ).fetchall()
+        d["status_history"] = [dict(r) for r in history_rows]
+
         return d
 
 
-def update_finding_status(finding_id: str, new_status: str, verified: Optional[bool] = None) -> bool:
-    """Update status of a finding (OPEN, CONFIRMED, FALSE_POSITIVE, RESOLVED, ACCEPTED_RISK)."""
+def update_finding_status(finding_id: str, new_status: str, verified: Optional[bool] = None,
+                          reason: Optional[str] = None, changed_by: str = "ANALYST") -> bool:
+    """Update status of a finding with audit trail and lifecycle tracking."""
     norm_status = FindingStatus.normalize(new_status)
     db = get_db()
     with db.get_connection() as conn:
         cur = conn.cursor()
+        cur.execute("SELECT status FROM findings WHERE id = ?", (finding_id,))
+        row = cur.fetchone()
+        if not row:
+            return False
+        old_status = row["status"]
+
+        now_iso = datetime.now().isoformat()
+        resolved_at = now_iso if norm_status == FindingStatus.RESOLVED else None
+
         if verified is not None:
             cur.execute("""
                 UPDATE findings
-                SET status = ?, verified = ?, last_seen = CURRENT_TIMESTAMP
+                SET status = ?, verified = ?, last_seen = CURRENT_TIMESTAMP,
+                    updated_at = ?, resolved_at = COALESCE(?, resolved_at)
                 WHERE id = ?
-            """, (norm_status, 1 if verified else 0, finding_id))
+            """, (norm_status, 1 if verified else 0, now_iso, resolved_at, finding_id))
         else:
             cur.execute("""
                 UPDATE findings
-                SET status = ?, last_seen = CURRENT_TIMESTAMP
+                SET status = ?, last_seen = CURRENT_TIMESTAMP,
+                    updated_at = ?, resolved_at = COALESCE(?, resolved_at)
                 WHERE id = ?
-            """, (norm_status, finding_id))
-        return cur.rowcount > 0
+            """, (norm_status, now_iso, resolved_at, finding_id))
+
+        if cur.rowcount > 0:
+            cur.execute("""
+                INSERT INTO finding_status_history (
+                    finding_id, old_status, new_status, reason, changed_by, changed_at
+                ) VALUES (?, ?, ?, ?, ?, ?)
+            """, (finding_id, old_status, norm_status, reason or "Status transition", changed_by, now_iso))
+            return True
+        return False
+
+
+def record_finding_retest(retest: FindingRetest) -> str:
+    """Record an authorized vulnerability re-test verification."""
+    db = get_db()
+    now_iso = datetime.now().isoformat()
+    with db.get_connection() as conn:
+        valid_evidence_id = retest.evidence_id
+        if valid_evidence_id:
+            exists = conn.execute("SELECT id FROM evidence WHERE id = ?", (valid_evidence_id,)).fetchone()
+            if not exists:
+                valid_evidence_id = None
+
+        valid_scan_id = retest.scan_id
+        if valid_scan_id:
+            exists = conn.execute("SELECT id FROM scans WHERE id = ?", (valid_scan_id,)).fetchone()
+            if not exists:
+                valid_scan_id = None
+
+        conn.execute("""
+            INSERT OR REPLACE INTO finding_retests (
+                id, finding_id, scan_id, evidence_id, test_type,
+                result, details, retested_by, timestamp
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (
+            retest.id, retest.finding_id, valid_scan_id, valid_evidence_id,
+            retest.test_type, retest.result, retest.details,
+            retest.retested_by, retest.timestamp or now_iso
+        ))
+
+        # Synchronize finding retest fields
+        resolved_at = now_iso if retest.result == RetestResult.PASS else None
+        conn.execute("""
+            UPDATE findings
+            SET retest_result = ?, retest_status = ?, last_verified = ?,
+                updated_at = ?, resolved_at = COALESCE(?, resolved_at)
+            WHERE id = ?
+        """, (retest.result, f"RETEST_{retest.result}", now_iso, now_iso, resolved_at, retest.finding_id))
+    return retest.id
+
+
+def get_finding_retests(finding_id: str) -> List[Dict[str, Any]]:
+    """Retrieve all retest records for a finding."""
+    db = get_db()
+    with db.get_connection() as conn:
+        rows = conn.execute(
+            "SELECT * FROM finding_retests WHERE finding_id = ? ORDER BY timestamp DESC",
+            (finding_id,)
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+
+def get_finding_status_history(finding_id: str) -> List[Dict[str, Any]]:
+    """Retrieve complete audit trail of status transitions for a finding."""
+    db = get_db()
+    with db.get_connection() as conn:
+        rows = conn.execute(
+            "SELECT * FROM finding_status_history WHERE finding_id = ? ORDER BY changed_at ASC",
+            (finding_id,)
+        ).fetchall()
+        return [dict(r) for r in rows]
 
 
 def get_all_findings(target: Optional[str] = None, severity: Optional[str] = None,
@@ -407,25 +539,42 @@ def get_findings_summary() -> Dict[str, int]:
 # ---------------------------------------------------------------------------
 
 def create_evidence(evidence: Evidence) -> str:
-    """Store structured, hashed evidence linked to findings and scans."""
+    """Store structured, hashed evidence linked to findings and scans (BDIE V2)."""
     db = get_db()
     # Compute sha256 hash if not already computed
     if not evidence.hash_sha256 and evidence.output_excerpt:
         evidence.hash_sha256 = hashlib.sha256(evidence.output_excerpt.encode("utf-8")).hexdigest()
 
     with db.get_connection() as conn:
+        valid_finding_id = evidence.finding_id
+        if valid_finding_id:
+            exists = conn.execute("SELECT id FROM findings WHERE id = ?", (valid_finding_id,)).fetchone()
+            if not exists:
+                valid_finding_id = None
+        valid_scan_id = evidence.scan_id
+        if valid_scan_id:
+            exists = conn.execute("SELECT id FROM scans WHERE id = ?", (valid_scan_id,)).fetchone()
+            if not exists:
+                valid_scan_id = None
+
         conn.execute("""
             INSERT OR REPLACE INTO evidence (
                 id, target, tool_name, output_excerpt, command_used,
                 finding_id, scan_id, timestamp, raw_result_path,
-                packet_metadata, http_metadata, scanner_result, hash_sha256
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                packet_metadata, http_metadata, scanner_result, hash_sha256,
+                evidence_type, request_data, response_data, observed_data, tool_run_id
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (
             evidence.id, evidence.target, evidence.tool_name, evidence.output_excerpt,
-            evidence.command_used, evidence.finding_id, evidence.scan_id,
+            evidence.command_used, valid_finding_id, valid_scan_id,
             evidence.timestamp, evidence.raw_result_path,
-            json.dumps(evidence.packet_metadata), json.dumps(evidence.http_metadata),
-            json.dumps(evidence.scanner_result), evidence.hash_sha256
+            json.dumps(evidence.packet_metadata or {}), json.dumps(evidence.http_metadata or {}),
+            json.dumps(evidence.scanner_result or {}), evidence.hash_sha256,
+            evidence.evidence_type or "TOOL_OUTPUT",
+            json.dumps(evidence.request_data or {}),
+            json.dumps(evidence.response_data or {}),
+            json.dumps(evidence.observed_data or {}),
+            evidence.tool_run_id
         ))
     return evidence.id
 

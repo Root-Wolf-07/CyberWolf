@@ -237,6 +237,40 @@ MIGRATIONS: List[Tuple[str, str, str]] = [
         CREATE INDEX IF NOT EXISTS idx_evidence_hash ON evidence(hash_sha256);
         CREATE INDEX IF NOT EXISTS idx_tool_runs_scan ON tool_runs(scan_id);
         """
+    ),
+    (
+        "004_bdie_vulnerability_engine",
+        "BDIE enhancements: finding retests, status transitions audit, exact locations, behavior and evidence models",
+        """
+        CREATE TABLE IF NOT EXISTS finding_retests (
+            id TEXT PRIMARY KEY,
+            finding_id TEXT NOT NULL,
+            scan_id TEXT,
+            evidence_id TEXT,
+            test_type TEXT NOT NULL,
+            result TEXT NOT NULL,
+            details TEXT,
+            retested_by TEXT DEFAULT 'CYBERWOLF BDIE',
+            timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY(finding_id) REFERENCES findings(id) ON DELETE CASCADE,
+            FOREIGN KEY(evidence_id) REFERENCES evidence(id) ON DELETE SET NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS finding_status_history (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            finding_id TEXT NOT NULL,
+            old_status TEXT NOT NULL,
+            new_status TEXT NOT NULL,
+            reason TEXT,
+            changed_by TEXT DEFAULT 'ANALYST',
+            changed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY(finding_id) REFERENCES findings(id) ON DELETE CASCADE
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_retests_finding ON finding_retests(finding_id);
+        CREATE INDEX IF NOT EXISTS idx_retests_result ON finding_retests(result);
+        CREATE INDEX IF NOT EXISTS idx_status_history_finding ON finding_status_history(finding_id);
+        """
     )
 ]
 
@@ -280,7 +314,7 @@ def apply_migrations(conn: sqlite3.Connection):
 
 def _upgrade_table_columns(conn: sqlite3.Connection):
     """Add new V2 columns to existing tables if missing (non-destructive)."""
-    # 1. Findings table column additions
+    # 1. Findings table column additions (V2 & BDIE)
     findings_cols = [
         ("title", "TEXT"),
         ("description", "TEXT"),
@@ -292,12 +326,57 @@ def _upgrade_table_columns(conn: sqlite3.Connection):
         ("risk_score", "REAL DEFAULT 0.0"),
         ("risk_factors", "JSON"),
         ("first_seen", "TIMESTAMP"),
-        ("last_seen", "TIMESTAMP")
+        ("last_seen", "TIMESTAMP"),
+        ("url", "TEXT"),
+        ("http_method", "TEXT"),
+        ("endpoint", "TEXT"),
+        ("parameter", "TEXT"),
+        ("service_version", "TEXT"),
+        ("component", "TEXT"),
+        ("technology", "TEXT"),
+        ("config_area", "TEXT"),
+        ("config_setting", "TEXT"),
+        ("config_observed", "TEXT"),
+        ("config_expected", "TEXT"),
+        ("source_file", "TEXT"),
+        ("source_line", "INTEGER"),
+        ("source_function", "TEXT"),
+        ("source_commit", "TEXT"),
+        ("observed_behavior", "TEXT"),
+        ("verified_behavior", "TEXT"),
+        ("potential_impact", "TEXT"),
+        ("exploitability", "TEXT"),
+        ("exploit_prerequisites", "TEXT"),
+        ("exploit_limitations", "TEXT"),
+        ("retest_status", "TEXT"),
+        ("retest_result", "TEXT"),
+        ("last_verified", "TIMESTAMP"),
+        ("resolved_at", "TIMESTAMP"),
+        ("updated_at", "TIMESTAMP"),
+        ("evidence_ids", "JSON"),
+        ("scan_id", "TEXT"),
+        ("tool_run_id", "TEXT"),
+        ("cvss", "REAL")
     ]
     for col_name, col_type in findings_cols:
         if not _column_exists(conn, "findings", col_name):
             try:
                 conn.execute(f"ALTER TABLE findings ADD COLUMN {col_name} {col_type};")
+            except Exception as e:
+                logger.debug(f"Column {col_name} alter warning: {e}")
+
+    # 1b. Evidence table column additions (BDIE)
+    evidence_cols = [
+        ("evidence_type", "TEXT DEFAULT 'TOOL_OUTPUT'"),
+        ("request_data", "JSON"),
+        ("response_data", "JSON"),
+        ("observed_data", "JSON"),
+        ("tool_run_id", "TEXT")
+    ]
+    for col_name, col_type in evidence_cols:
+        if not _column_exists(conn, "evidence", col_name):
+            try:
+                conn.execute(f"ALTER TABLE evidence ADD COLUMN {col_name} {col_type};")
             except Exception as e:
                 logger.debug(f"Column {col_name} alter warning: {e}")
 
