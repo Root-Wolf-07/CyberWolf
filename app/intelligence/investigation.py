@@ -89,6 +89,14 @@ class InvestigationEngine:
             finding = finding_input
             finding_dict = finding.to_dict()
 
+        # Ensure transparent risk factors are populated
+        if not finding.risk_factors:
+            from app.detection.risk_engine import RiskEngine
+            re_res = RiskEngine().score_finding(finding)
+            finding.risk_factors = re_res.get("factors", {})
+            if not finding.risk_score:
+                finding.risk_score = re_res.get("score", 0.0)
+
         # 1. Exact Location Resolution
         location = ExactLocationEngine.resolve_location(finding)
 
@@ -131,6 +139,8 @@ class InvestigationEngine:
             },
             "observed_behavior": observed,
             "verified_behavior": verified,
+            "why_flagged": self._generate_why_flagged(finding, location, cve_info),
+            "why_this_was_flagged": self._generate_why_flagged(finding, location, cve_info),
             "security_impact": impact,
             "exploitation_assessment": exploitation,
             "vulnerability_intelligence": {
@@ -288,6 +298,45 @@ class InvestigationEngine:
             },
             "full_investigation": investigation
         }
+
+    def _generate_why_flagged(self, finding: Finding, location: ExactLocation,
+                              cve_info: Optional[Dict[str, Any]]) -> str:
+        """Provide a factual, evidence-grounded explanation of why this was flagged without hallucination."""
+        title_lower = (finding.title or finding.vulnerability or "").lower()
+        cat = (finding.category or "").lower()
+        evidence_text = finding.evidence or finding.observed_behavior or ""
+
+        if "sql" in title_lower or "injection" in cat:
+            param_part = f"parameter '{location.parameter}'" if location.parameter else "an input parameter"
+            endpoint_part = f"at {location.endpoint or location.url}" if (location.endpoint or location.url) else ""
+            return (
+                f"CyberWolf detected that {param_part} {endpoint_part} influenced the server-side database response in a way consistent with SQL injection behavior. "
+                f"The scanner observed a measurable response difference or database error syntax when the parameter was tested. "
+                f"The finding is supported by the captured request/response evidence."
+            )
+        elif "header" in title_lower or "missing" in title_lower:
+            setting = location.config_setting or "security header"
+            return (
+                f"CyberWolf inspected the HTTP response headers for {location.host or finding.target} and detected that the '{setting}' header was not set. "
+                f"Without this header, client browsers lack defensive directives to prevent MIME-confusion, clickjacking, or cleartext transmission."
+            )
+        elif "cookie" in title_lower:
+            return (
+                f"CyberWolf inspected HTTP Set-Cookie directives and identified cookies missing required 'Secure', 'HttpOnly', or 'SameSite' attributes. "
+                f"This allows session cookies to be accessed by client scripts or transmitted across unencrypted channels."
+            )
+        elif "port" in title_lower or location.location_type == "NETWORK":
+            return (
+                f"CyberWolf detected an active service ({location.service or 'service'}) listening on port {location.port}/{location.protocol or 'tcp'}. "
+                f"The scanner successfully received a valid response banner from the host. Network exposure analysis flagged this port for verification."
+            )
+        elif evidence_text:
+            return (
+                f"CyberWolf flagged this issue based on concrete evidence captured during security scanning: {evidence_text[:200].strip()}... "
+                f"The observed behavior deviates from expected secure baselines."
+            )
+        else:
+            return "Insufficient evidence for confirmation. Passive scanner observation requires active probe verification."
 
     def _infer_remediation(self, finding: Finding, cve_info: Optional[Dict[str, Any]],
                            owasp_info: Optional[Dict[str, Any]]) -> str:

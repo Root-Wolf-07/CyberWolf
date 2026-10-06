@@ -57,23 +57,36 @@ class FindingStatus:
     OPEN = "OPEN"  # Backward compatibility
     TRIAGED = "TRIAGED"
     CONFIRMED = "CONFIRMED"
+    IN_PROGRESS = "IN_PROGRESS"
     REMEDIATION_REQUIRED = "REMEDIATION_REQUIRED"
+    REMEDIATED = "REMEDIATED"
     RETEST_PENDING = "RETEST_PENDING"
+    RETEST_REQUIRED = "RETEST_REQUIRED"
+    VERIFIED = "VERIFIED"
     RESOLVED = "RESOLVED"
     FALSE_POSITIVE = "FALSE_POSITIVE"
     DUPLICATE = "DUPLICATE"
     ACCEPTED_RISK = "ACCEPTED_RISK"
 
     ALL = [
-        NEW, OPEN, TRIAGED, CONFIRMED, REMEDIATION_REQUIRED,
-        RETEST_PENDING, RESOLVED, FALSE_POSITIVE, DUPLICATE, ACCEPTED_RISK
+        NEW, OPEN, TRIAGED, CONFIRMED, IN_PROGRESS,
+        REMEDIATION_REQUIRED, REMEDIATED, RETEST_PENDING,
+        RETEST_REQUIRED, VERIFIED, RESOLVED, FALSE_POSITIVE,
+        DUPLICATE, ACCEPTED_RISK
     ]
+
+    @classmethod
+    def is_valid(cls, val: Optional[str]) -> bool:
+        if not val:
+            return False
+        upper = val.strip().upper().replace(" ", "_").replace("-", "_")
+        return upper in cls.ALL
 
     @classmethod
     def normalize(cls, val: Optional[str]) -> str:
         if not val:
             return cls.OPEN
-        upper = val.strip().upper().replace(" ", "_")
+        upper = val.strip().upper().replace(" ", "_").replace("-", "_")
         return upper if upper in cls.ALL else cls.OPEN
 
 

@@ -68,9 +68,100 @@ class ScanService:
         self.ffuf = FfufAdapter()
         self.tshark = TsharkAdapter()
 
+        self.scan_progress: Dict[str, Dict[str, Any]] = {}
+        self.latest_scan_id: Optional[str] = None
+
+    def _init_progress(self, scan_id: str, target: str, scan_type: str):
+        self.latest_scan_id = scan_id
+        self.scan_progress[scan_id] = {
+            "scan_id": scan_id,
+            "target": target,
+            "scan_type": scan_type,
+            "status": "RUNNING",
+            "status_text": "Assessment in progress...",
+            "steps": [
+                {"label": "Target validated", "completed": False},
+                {"label": "Authorization verified", "completed": False},
+                {"label": "Asset identified", "completed": False},
+                {"label": "Ports/services discovered", "completed": False},
+                {"label": "Web endpoints discovered", "completed": False},
+                {"label": "Security checks executed", "completed": False},
+                {"label": "Findings normalized", "completed": False},
+                {"label": "Evidence captured", "completed": False},
+                {"label": "Findings correlated", "completed": False},
+                {"label": "Risk calculated", "completed": False}
+            ]
+        }
+
+    def _mark_progress_step(self, scan_id: str, label: str):
+        if scan_id in self.scan_progress:
+            for s in self.scan_progress[scan_id]["steps"]:
+                if s["label"] == label:
+                    s["completed"] = True
+
+    def _complete_progress(self, scan_id: str, findings_count: int = 0, status: str = "COMPLETED"):
+        if scan_id in self.scan_progress:
+            self.scan_progress[scan_id]["status"] = status
+            self.scan_progress[scan_id]["status_text"] = "Assessment completed"
+            self.scan_progress[scan_id]["findings_count"] = findings_count
+            for s in self.scan_progress[scan_id]["steps"]:
+                s["completed"] = True
+
+    def get_scan_progress(self, scan_id: Optional[str] = None) -> Dict[str, Any]:
+        """Return real live discovery activity progress."""
+        sid = scan_id or self.latest_scan_id
+        if sid and sid in self.scan_progress:
+            return self.scan_progress[sid]
+
+        recent = self.list_scans(limit=1)
+        if recent:
+            last = recent[0]
+            is_comp = (last.get("status") or "").upper() == "COMPLETED"
+            return {
+                "scan_id": last.get("id"),
+                "target": last.get("target"),
+                "scan_type": last.get("scan_type"),
+                "status": "COMPLETED" if is_comp else last.get("status"),
+                "status_text": "Assessment completed" if is_comp else (last.get("status") or "IDLE"),
+                "findings_count": last.get("findings_count", 0),
+                "steps": [
+                    {"label": "Target validated", "completed": is_comp},
+                    {"label": "Authorization verified", "completed": is_comp},
+                    {"label": "Asset identified", "completed": is_comp},
+                    {"label": "Ports/services discovered", "completed": is_comp},
+                    {"label": "Web endpoints discovered", "completed": is_comp},
+                    {"label": "Security checks executed", "completed": is_comp},
+                    {"label": "Findings normalized", "completed": is_comp},
+                    {"label": "Evidence captured", "completed": is_comp},
+                    {"label": "Findings correlated", "completed": is_comp},
+                    {"label": "Risk calculated", "completed": is_comp}
+                ]
+            }
+
+        return {
+            "scan_id": None,
+            "target": None,
+            "status": "IDLE",
+            "status_text": "Awaiting target submission",
+            "findings_count": 0,
+            "steps": [
+                {"label": "Target validated", "completed": False},
+                {"label": "Authorization verified", "completed": False},
+                {"label": "Asset identified", "completed": False},
+                {"label": "Ports/services discovered", "completed": False},
+                {"label": "Web endpoints discovered", "completed": False},
+                {"label": "Security checks executed", "completed": False},
+                {"label": "Findings normalized", "completed": False},
+                {"label": "Evidence captured", "completed": False},
+                {"label": "Findings correlated", "completed": False},
+                {"label": "Risk calculated", "completed": False}
+            ]
+        }
+
     def start_scan(self, target: str, scan_type: str = "network",
                    options: Optional[Dict[str, Any]] = None,
-                   interactive_auth: bool = False) -> Dict[str, Any]:
+                   interactive_auth: bool = False,
+                   scan_id: Optional[str] = None) -> Dict[str, Any]:
         """Execute the complete deterministic scan pipeline."""
         opts = options or {}
         start_time_ts = time.time()
@@ -107,13 +198,20 @@ class ScanService:
         active_policy = self.policy_engine.get_active_policy()
 
         # 4. Create Scan Session in Database
-        scan_id = create_scan(
+        actual_scan_id = create_scan(
             scan_type=scan_type,
             target=clean_target,
             mode=active_policy.name,
             authorization_status="AUTHORIZED",
-            policy=active_policy.name
+            policy=active_policy.name,
+            scan_id=scan_id
         )
+        scan_id = actual_scan_id
+
+        self._init_progress(scan_id, clean_target, scan_type)
+        self._mark_progress_step(scan_id, "Target validated")
+        self._mark_progress_step(scan_id, "Authorization verified")
+
         logger.info(f"Initialized assessment session {scan_id} for target {clean_target} [{scan_type}]")
         audit_log("SCAN_SESSION", "STARTED", target=clean_target, decision="APPROVED",
                   details=f"Scan ID: {scan_id}, Mode: {active_policy.name}")
@@ -125,6 +223,7 @@ class ScanService:
             ip_address=target_host if parsed_target.target_type in ["ipv4", "ipv6"] else None,
             asset_type=parsed_target.target_type
         )
+        self._mark_progress_step(scan_id, "Asset identified")
 
         all_findings: List[Finding] = []
         tools_executed: List[str] = []
@@ -161,6 +260,8 @@ class ScanService:
                     discovered_hosts.extend(res.get("hosts", []))
                     for f in res.get("findings", []):
                         all_findings.append(self.normalizer.normalize(f, clean_target, "Native Network Engine"))
+
+                self._mark_progress_step(scan_id, "Ports/services discovered")
 
             if scan_type in ["vulnerability", "vuln", "full"]:
                 # Nuclei
@@ -206,20 +307,30 @@ class ScanService:
                 tools_executed.append("Native Web Engine")
                 web_scanner = WebScanner()
                 web_res = web_scanner.assess_url(clean_target)
+                self._mark_progress_step(scan_id, "Web endpoints discovered")
+
                 # Sensitive endpoint bug analyzer
                 bug_analyzer = BugAnalyzer()
                 bug_res = bug_analyzer.analyze(clean_target)
                 for f in bug_res.get("findings", []):
                     all_findings.append(self.normalizer.normalize(f, clean_target, "CYBERWOLF Bug Engine"))
 
+            self._mark_progress_step(scan_id, "Ports/services discovered")
+            self._mark_progress_step(scan_id, "Web endpoints discovered")
+            self._mark_progress_step(scan_id, "Security checks executed")
+            self._mark_progress_step(scan_id, "Findings normalized")
+            self._mark_progress_step(scan_id, "Evidence captured")
+
             # 7. Finding Deduplication
             deduped_findings = self.deduplicator.deduplicate(all_findings)
 
             # 8. Finding Correlation
             correlated_findings = self.correlator.correlate(deduped_findings, discovered_hosts)
+            self._mark_progress_step(scan_id, "Findings correlated")
 
             # 9. Risk Scoring
             scored_findings = self.risk_engine.score_findings_batch(correlated_findings)
+            self._mark_progress_step(scan_id, "Risk calculated")
 
             # Calculate asset risk
             asset_risk, risk_level = self.risk_engine.calculate_asset_risk(scored_findings)
@@ -285,12 +396,17 @@ class ScanService:
                 tools_executed=tools_executed
             )
 
+            self._complete_progress(scan_id, len(scored_findings))
+
             audit_log("SCAN_SESSION", "COMPLETED", target=clean_target, decision="COMPLETED",
                       details=f"Duration: {duration}s, Findings: {len(scored_findings)}")
 
             return summary_dict
 
         except Exception as e:
+            if scan_id in self.scan_progress:
+                self.scan_progress[scan_id]["status"] = "FAILED"
+                self.scan_progress[scan_id]["status_text"] = f"Assessment failed: {str(e)}"
             logger.error(f"Scan session {scan_id} failed: {e}")
             complete_scan(scan_id=scan_id, status=ScanStatus.FAILED, summary={"error": str(e)})
             audit_log("SCAN_SESSION", "FAILED", target=clean_target, decision="FAILED", details=str(e))

@@ -33,9 +33,10 @@ logger = get_logger()
 # ---------------------------------------------------------------------------
 
 def create_scan(scan_type: str, target: str, mode: str = "SAFE_SCAN",
-                authorization_status: str = "AUTHORIZED", policy: Optional[str] = None) -> str:
+                authorization_status: str = "AUTHORIZED", policy: Optional[str] = None,
+                scan_id: Optional[str] = None) -> str:
     """Initialize and persist a new scan record."""
-    scan_id = f"SCAN-{datetime.now().strftime('%Y%m%d%H%M%S')}-{uuid.uuid4().hex[:4].upper()}"
+    scan_id = scan_id or f"SCAN-{datetime.now().strftime('%Y%m%d%H%M%S')}-{uuid.uuid4().hex[:4].upper()}"
     db = get_db()
     with db.get_connection() as conn:
         conn.execute("""

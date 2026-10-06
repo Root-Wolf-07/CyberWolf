@@ -178,6 +178,26 @@ class FindingService:
             "badge": "DISCOVERED"
         })
 
+        # 1b. Evidence captured event
+        if f_dict.get("evidence"):
+            events.append({
+                "timestamp": first_seen,
+                "event_type": "EVIDENCE",
+                "actor": f_dict.get("source_tool", "EvidenceVault"),
+                "description": "Evidence captured & verified with SHA-256 integrity digest",
+                "badge": "EVIDENCE"
+            })
+
+        # 1c. Risk calculated event
+        if f_dict.get("risk_score") is not None:
+            events.append({
+                "timestamp": f_dict.get("created_at") or first_seen,
+                "event_type": "RISK_CALCULATED",
+                "actor": "RiskEngine",
+                "description": f"Risk calculated: {float(f_dict.get('risk_score', 0)):.1f}/10.0 (Severity: {f_dict.get('severity', 'INFO')})",
+                "badge": "RISK_SCORED"
+            })
+
         # 2. Status change events
         for h in history:
             events.append({

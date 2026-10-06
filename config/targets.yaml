@@ -183,3 +183,24 @@ scopes:
   risk_level: medium
   targets:
   - 127.0.0.1
+- allowed_operations:
+  - all
+  id: report-scope
+  name: Authorized Scope report-scope
+  risk_level: medium
+  targets:
+  - sec-lab.report-test.local
+- allowed_operations:
+  - all
+  id: unit-tests
+  name: Authorized Scope unit-tests
+  risk_level: medium
+  targets:
+  - 127.0.0.1
+- allowed_operations:
+  - all
+  id: unit-tests
+  name: Authorized Scope unit-tests
+  risk_level: medium
+  targets:
+  - 127.0.0.1

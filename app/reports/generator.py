@@ -101,6 +101,25 @@ class ReportGenerator:
             retests = get_finding_retests(fid) if fid else []
             f_item["retests"] = retests
 
+            # Attach investigation why_this_was_flagged & exact location details
+            try:
+                from app.intelligence.investigation import get_investigation_engine
+                inv_engine = get_investigation_engine()
+                inv_res = inv_engine.investigate(f_item)
+                f_item["why_this_was_flagged"] = inv_res.get("why_this_was_flagged")
+                f_item["why_flagged"] = inv_res.get("why_flagged")
+                f_item["exact_location_details"] = inv_res.get("exact_location")
+            except Exception as e:
+                logger.debug(f"Error enriching finding {fid} in report generator: {e}")
+
+            # Attach timeline
+            try:
+                from app.services.finding_service import get_finding_service
+                finding_svc = get_finding_service()
+                f_item["timeline"] = finding_svc.get_timeline(fid, f_item, get_finding_status_history(fid), retests)
+            except Exception as e:
+                logger.debug(f"Error attaching timeline for {fid}: {e}")
+
             findings.append(f_item)
 
         generated_files = {}
@@ -563,6 +582,44 @@ class ReportGenerator:
                 </tr>
                 """
 
+            # Why this was flagged
+            why_text = f.get("why_this_was_flagged") or f.get("why_flagged") or ""
+            why_html = ""
+            if why_text:
+                why_safe = html.escape(why_text)
+                why_html = f"""
+                <div class="why-flagged-box" style="background:#0c1524; border-left:3px solid #3b82f6; border-radius:4px; padding:10px 14px; margin:12px 0;">
+                    <div style="font-size:11px; font-weight:700; color:#60a5fa; text-transform:uppercase; margin-bottom:4px;">◈ WHY THIS WAS FLAGGED</div>
+                    <div style="font-size:12px; color:#e2e8f0; line-height:1.5;">{why_safe}</div>
+                </div>
+                """
+
+            # Timeline
+            timeline_items = f.get("timeline") or []
+            timeline_html = ""
+            if timeline_items:
+                tl_rows = ""
+                for tlev in timeline_items:
+                    t_ts = html.escape(str(tlev.get("timestamp") or "")[:19].replace("T", " "))
+                    t_type = html.escape(str(tlev.get("event_type") or "EVENT"))
+                    t_desc = html.escape(str(tlev.get("description") or ""))
+                    t_actor = html.escape(str(tlev.get("actor") or "system"))
+                    tl_rows += f"""
+                    <div style="font-size:11px; margin-bottom:4px; color:#cbd5e1;">
+                        <span style="color:#94a3b8; font-family:monospace;">{t_ts}</span> • 
+                        <strong style="color:#93c5fd;">{t_type}:</strong> {t_desc} 
+                        <span style="color:#64748b;">({t_actor})</span>
+                    </div>
+                    """
+                timeline_html = f"""
+                <div class="section-sub" style="margin-top:14px;">
+                    <h4>Finding Lifecycle Timeline</h4>
+                    <div style="background:#0a0f1d; border:1px solid #1e293b; border-radius:5px; padding:10px 14px;">
+                        {tl_rows}
+                    </div>
+                </div>
+                """
+
             findings_html += f"""
             <div class="finding-card" id="{id_safe}">
                 <div class="finding-header">
@@ -587,6 +644,8 @@ class ReportGenerator:
                         <span class="loc-label">EXACT AFFECTED LOCATION:</span>
                         <div class="loc-content">{loc_html}</div>
                     </div>
+
+                    {why_html}
 
                     <div class="meta-grid">
                         <div><strong>Finding ID:</strong> <code>{id_safe}</code></div>
@@ -633,6 +692,8 @@ class ReportGenerator:
                             <p>{verif_proc_safe}</p>
                         </div>
                     </div>
+
+                    {timeline_html}
                 </div>
             </div>
             """
