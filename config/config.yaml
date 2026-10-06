@@ -1,7 +1,7 @@
 # CYBERWOLF Configuration
 app:
   name: "CYBERWOLF"
-  version: "1.0.0"
+  version: "2.0.0"
   tagline: "Hunt Threats. Find Weaknesses. Defend Everything."
 
 ai:

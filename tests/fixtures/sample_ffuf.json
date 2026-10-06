@@ -1,0 +1,33 @@
+{
+  "commandline": "ffuf -u http://192.168.1.100/FUZZ -w wordlist.txt -o results.json",
+  "time": "2026-10-06T10:00:00Z",
+  "results": [
+    {
+      "input": { "FUZZ": "admin" },
+      "position": 1,
+      "status": 200,
+      "length": 4512,
+      "words": 312,
+      "lines": 45,
+      "url": "http://192.168.1.100/admin"
+    },
+    {
+      "input": { "FUZZ": "api" },
+      "position": 2,
+      "status": 200,
+      "length": 182,
+      "words": 15,
+      "lines": 3,
+      "url": "http://192.168.1.100/api"
+    },
+    {
+      "input": { "FUZZ": ".env" },
+      "position": 3,
+      "status": 200,
+      "length": 980,
+      "words": 64,
+      "lines": 18,
+      "url": "http://192.168.1.100/.env"
+    }
+  ]
+}

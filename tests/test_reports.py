@@ -28,6 +28,7 @@ class TestReports(unittest.TestCase):
         self.assertIn("TXT", files)
         self.assertIn("HTML", files)
         self.assertIn("CSV", files)
+        self.assertIn("PDF", files)
 
         for fmt, path in files.items():
             self.assertTrue(os.path.exists(path))

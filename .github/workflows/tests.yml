@@ -1,0 +1,47 @@
+name: CYBERWOLF V2 Quality & Security Test Suite
+
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+    branches: [ main, master ]
+
+jobs:
+  test:
+    name: Test & Security Audit (Python ${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.9", "3.10", "3.11"]
+
+    steps:
+      - name: Checkout Code Repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: 'pip'
+
+      - name: Install Dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pytest pytest-cov
+
+      - name: Verify Offline Diagnostics (Doctor Check)
+        run: |
+          python -m app.main doctor
+          python -m app.main --version
+
+      - name: Run Test Suite (Unit, Integration, Security)
+        run: |
+          pytest tests -v
+
+      - name: Security & Secret Audit
+        run: |
+          # Ensure no active production secrets or runtime databases are tracked
+          git diff --check
+          ! git ls-files | grep -E '\.sqlite3?$|\.db$|\.env$'

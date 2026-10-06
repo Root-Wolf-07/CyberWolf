@@ -8,17 +8,27 @@ from app.database.operations import get_all_findings
 
 console = Console()
 
-def handle_reports(action: str = "list", target: str = None):
+def handle_reports(action: str = "list", target: str = None, scan_id: str = None, report_format: str = None):
     """Manage and generate security assessment reports."""
     generator = ReportGenerator()
 
     if action == "generate":
-        target_str = target or "All Assessed Targets"
-        console.print(f"\n[bold cyan]◈ GENERATING MULTI-FORMAT SECURITY REPORTS FOR: {target_str} ◈[/bold cyan]")
-        files = generator.generate_all_formats(target=target_str)
-        console.print("[bold green]✔ Reports generated successfully:[/bold green]")
-        for fmt, path in files.items():
-            console.print(f" • [bold white]{fmt}:[/bold white] [cyan]{path}[/cyan]")
+        target_str = target
+        if not target_str and scan_id:
+            from app.database.operations import get_scan
+            s = get_scan(scan_id)
+            if s:
+                target_str = s.get("target")
+        target_str = target_str or "All Assessed Targets"
+        
+        console.print(f"\n[bold cyan]◈ GENERATING SECURITY REPORTS FOR: {target_str} ◈[/bold cyan]")
+        files = generator.generate_all_formats(target=target_str, scan_id=scan_id)
+        if report_format and report_format.upper() in files:
+            console.print(f"[bold green]✔ Report ({report_format.upper()}) generated successfully:[/bold green] [cyan]{files[report_format.upper()]}[/cyan]")
+        else:
+            console.print("[bold green]✔ Reports generated successfully:[/bold green]")
+            for fmt, path in files.items():
+                console.print(f" • [bold white]{fmt}:[/bold white] [cyan]{path}[/cyan]")
         console.print()
     else:
         # List generated reports from DB

@@ -1,37 +1,205 @@
-"""CYBERWOLF Database CRUD Operations & Queries."""
+"""CYBERWOLF Database CRUD Operations & Queries (V2).
+
+Provides unified data persistence and querying for:
+- Scans & Scan Sessions
+- Assets & Host/Port records
+- Normalized Findings & Multi-tool Sources
+- Cryptographic Evidence & Tool Runs
+- Audit Events & Reports
+- Full-text search and JSON exports
+"""
 
 import json
 import uuid
+import hashlib
 from datetime import datetime
 from typing import List, Dict, Any, Optional
+from pathlib import Path
+
 from app.database.db_manager import get_db
-from app.database.models import Finding, HostRecord, PortRecord, ScanRecord
+from app.database.models import (
+    Finding, HostRecord, PortRecord, ScanRecord, Asset,
+    Evidence, ToolRun, ReportRecord, AuditEvent,
+    SeverityLevel, ConfidenceLevel, FindingStatus, ScanStatus
+)
 from app.core.logger import get_logger
 
 logger = get_logger()
 
-def create_scan(scan_type: str, target: str, mode: str = "SAFE_SCAN") -> str:
+
+# ---------------------------------------------------------------------------
+# SCANS
+# ---------------------------------------------------------------------------
+
+def create_scan(scan_type: str, target: str, mode: str = "SAFE_SCAN",
+                authorization_status: str = "AUTHORIZED", policy: Optional[str] = None) -> str:
     """Initialize and persist a new scan record."""
     scan_id = f"SCAN-{datetime.now().strftime('%Y%m%d%H%M%S')}-{uuid.uuid4().hex[:4].upper()}"
     db = get_db()
     with db.get_connection() as conn:
         conn.execute("""
-            INSERT INTO scans (id, scan_type, target, mode, status, start_time, summary)
-            VALUES (?, ?, ?, ?, 'RUNNING', CURRENT_TIMESTAMP, ?)
-        """, (scan_id, scan_type, target, mode, json.dumps({})))
+            INSERT INTO scans (
+                id, scan_type, target, mode, status, authorization_status,
+                policy_applied, start_time, tools_executed, summary
+            ) VALUES (?, ?, ?, ?, 'RUNNING', ?, ?, CURRENT_TIMESTAMP, ?, ?)
+        """, (
+            scan_id, scan_type, target, mode, authorization_status,
+            policy or mode, json.dumps([]), json.dumps({})
+        ))
+        # Also record in scan_targets
+        conn.execute("""
+            INSERT INTO scan_targets (scan_id, target, authorized, scope_name)
+            VALUES (?, ?, 1, ?)
+        """, (scan_id, target, mode))
     return scan_id
 
-def complete_scan(scan_id: str, status: str = "COMPLETED", summary: Optional[Dict[str, Any]] = None, findings_count: int = 0):
-    """Mark a scan as completed with final summary and findings count."""
+
+def complete_scan(scan_id: str, status: str = "COMPLETED",
+                  summary: Optional[Dict[str, Any]] = None,
+                  findings_count: int = 0,
+                  severity_counts: Optional[Dict[str, int]] = None,
+                  tools_executed: Optional[List[str]] = None):
+    """Mark a scan as completed with final metrics and summary."""
     db = get_db()
+    counts = severity_counts or {}
     with db.get_connection() as conn:
         conn.execute("""
             UPDATE scans
-            SET status = ?, end_time = CURRENT_TIMESTAMP, findings_count = ?, summary = ?
+            SET status = ?,
+                end_time = CURRENT_TIMESTAMP,
+                findings_count = ?,
+                critical_count = ?,
+                high_count = ?,
+                medium_count = ?,
+                low_count = ?,
+                tools_executed = COALESCE(?, tools_executed),
+                summary = ?
             WHERE id = ?
-        """, (status, findings_count, json.dumps(summary or {}), scan_id))
+        """, (
+            status,
+            findings_count,
+            counts.get("CRITICAL", 0),
+            counts.get("HIGH", 0),
+            counts.get("MEDIUM", 0),
+            counts.get("LOW", 0),
+            json.dumps(tools_executed) if tools_executed is not None else None,
+            json.dumps(summary or {}),
+            scan_id
+        ))
 
-def upsert_host(ip: str, hostname: Optional[str] = None, mac: Optional[str] = None, os_name: Optional[str] = None) -> int:
+
+def get_scan(scan_id: str) -> Optional[Dict[str, Any]]:
+    """Retrieve full scan session record by ID."""
+    db = get_db()
+    with db.get_connection() as conn:
+        row = conn.execute("SELECT * FROM scans WHERE id = ?", (scan_id,)).fetchone()
+        if row:
+            d = dict(row)
+            if isinstance(d.get("summary"), str):
+                try:
+                    d["summary"] = json.loads(d["summary"])
+                except Exception:
+                    pass
+            if isinstance(d.get("tools_executed"), str):
+                try:
+                    d["tools_executed"] = json.loads(d["tools_executed"])
+                except Exception:
+                    pass
+            return d
+        return None
+
+
+def get_all_scans(limit: int = 50) -> List[Dict[str, Any]]:
+    """Retrieve recent scans ordered by start time descending."""
+    db = get_db()
+    with db.get_connection() as conn:
+        rows = conn.execute(
+            "SELECT * FROM scans ORDER BY start_time DESC LIMIT ?", (limit,)
+        ).fetchall()
+        results = []
+        for r in rows:
+            d = dict(r)
+            if isinstance(d.get("tools_executed"), str):
+                try:
+                    d["tools_executed"] = json.loads(d["tools_executed"])
+                except Exception:
+                    d["tools_executed"] = []
+            results.append(d)
+        return results
+
+
+def cancel_scan(scan_id: str, reason: str = "Operator requested cancellation") -> bool:
+    """Safely transition a running scan to CANCELLED."""
+    db = get_db()
+    with db.get_connection() as conn:
+        cur = conn.cursor()
+        cur.execute("""
+            UPDATE scans
+            SET status = 'CANCELLED',
+                end_time = CURRENT_TIMESTAMP,
+                summary = json_set(COALESCE(summary, '{}'), '$.cancellation_reason', ?)
+            WHERE id = ? AND status = 'RUNNING'
+        """, (reason, scan_id))
+        return cur.rowcount > 0
+
+
+# ---------------------------------------------------------------------------
+# ASSETS & HOSTS
+# ---------------------------------------------------------------------------
+
+def upsert_asset(target_identifier: str, hostname: Optional[str] = None,
+                 ip_address: Optional[str] = None, mac_address: Optional[str] = None,
+                 operating_system: Optional[str] = None, device_type: Optional[str] = None,
+                 asset_type: str = "ip", risk_score: float = 0.0) -> int:
+    """Insert or update an asset entity with automatic deduplication."""
+    db = get_db()
+    with db.get_connection() as conn:
+        cur = conn.cursor()
+        cur.execute("SELECT id, risk_score FROM assets WHERE target_identifier = ?", (target_identifier,))
+        row = cur.fetchone()
+        if row:
+            asset_id = row["id"]
+            cur.execute("""
+                UPDATE assets
+                SET hostname = COALESCE(?, hostname),
+                    ip_address = COALESCE(?, ip_address),
+                    mac_address = COALESCE(?, mac_address),
+                    operating_system = COALESCE(?, operating_system),
+                    device_type = COALESCE(?, device_type),
+                    risk_score = MAX(COALESCE(risk_score, 0.0), ?),
+                    last_scanned = CURRENT_TIMESTAMP
+                WHERE id = ?
+            """, (hostname, ip_address, mac_address, operating_system, device_type, risk_score, asset_id))
+            return asset_id
+        else:
+            cur.execute("""
+                INSERT INTO assets (
+                    target_identifier, asset_type, hostname, ip_address,
+                    mac_address, operating_system, device_type, risk_score,
+                    first_seen, last_scanned
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+            """, (target_identifier, asset_type, hostname, ip_address, mac_address, operating_system, device_type, risk_score))
+            return cur.lastrowid
+
+
+def get_all_assets() -> List[Dict[str, Any]]:
+    """Retrieve list of all discovered assets."""
+    db = get_db()
+    with db.get_connection() as conn:
+        rows = conn.execute("SELECT * FROM assets ORDER BY last_scanned DESC").fetchall()
+        return [dict(r) for r in rows]
+
+
+def get_asset(asset_id: int) -> Optional[Dict[str, Any]]:
+    """Retrieve asset by internal integer ID."""
+    db = get_db()
+    with db.get_connection() as conn:
+        row = conn.execute("SELECT * FROM assets WHERE id = ?", (asset_id,)).fetchone()
+        return dict(row) if row else None
+
+
+def upsert_host(ip: str, hostname: Optional[str] = None, mac: Optional[str] = None,
+                os_name: Optional[str] = None, asset_id: Optional[int] = None) -> int:
     """Insert or update a host record, returning host_id."""
     db = get_db()
     with db.get_connection() as conn:
@@ -45,16 +213,18 @@ def upsert_host(ip: str, hostname: Optional[str] = None, mac: Optional[str] = No
                 SET hostname = COALESCE(?, hostname),
                     mac_address = COALESCE(?, mac_address),
                     os_name = COALESCE(?, os_name),
+                    asset_id = COALESCE(?, asset_id),
                     last_seen = CURRENT_TIMESTAMP
                 WHERE id = ?
-            """, (hostname, mac, os_name, host_id))
+            """, (hostname, mac, os_name, asset_id, host_id))
             return host_id
         else:
             cur.execute("""
-                INSERT INTO hosts (ip_address, hostname, mac_address, os_name, status)
-                VALUES (?, ?, ?, ?, 'UP')
-            """, (ip, hostname, mac, os_name))
+                INSERT INTO hosts (ip_address, hostname, mac_address, os_name, status, asset_id)
+                VALUES (?, ?, ?, ?, 'UP', ?)
+            """, (ip, hostname, mac, os_name, asset_id))
             return cur.lastrowid
+
 
 def upsert_port(host_id: int, port_number: int, protocol: str = "tcp",
                 state: str = "open", service_name: Optional[str] = None,
@@ -82,62 +252,251 @@ def upsert_port(host_id: int, port_number: int, protocol: str = "tcp",
             return port_id
         else:
             cur.execute("""
-                INSERT INTO ports (host_id, port_number, protocol, state, service_name, service_product, service_version, banner)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                INSERT INTO ports (
+                    host_id, port_number, protocol, state,
+                    service_name, service_product, service_version, banner
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             """, (host_id, port_number, protocol, state, service_name, service_product, service_version, banner))
             return cur.lastrowid
 
+
+# ---------------------------------------------------------------------------
+# FINDINGS & PROVENANCE
+# ---------------------------------------------------------------------------
+
 def create_finding(finding: Finding) -> str:
-    """Store a normalized security finding."""
+    """Store or update a normalized security finding."""
     db = get_db()
     with db.get_connection() as conn:
         conn.execute("""
             INSERT OR REPLACE INTO findings (
-                id, target, port, protocol, service, vulnerability,
-                cve, cwe, severity, confidence, evidence, remediation, source_tool, status
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                id, target, asset_id, host_id, port, protocol, service,
+                vulnerability, title, description, category, host,
+                cve, cve_ids, cwe, cwe_ids, owasp_category,
+                severity, confidence, evidence, remediation, source_tool,
+                risk_score, risk_factors, first_seen, last_seen, created_at,
+                verified, status
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (
-            finding.id, finding.target, finding.port, finding.protocol,
-            finding.service, finding.vulnerability, finding.cve, finding.cwe,
-            finding.severity.upper(), finding.confidence.upper(), finding.evidence,
-            finding.remediation, finding.source_tool, finding.status
+            finding.id, finding.target, finding.asset_id, finding.host_id,
+            finding.port, finding.protocol, finding.service,
+            finding.vulnerability, finding.title or finding.vulnerability,
+            finding.description or finding.evidence, finding.category, finding.host or finding.target,
+            finding.cve, json.dumps(finding.cve_ids),
+            finding.cwe, json.dumps(finding.cwe_ids), finding.owasp_category,
+            finding.severity.upper(), finding.confidence.upper(),
+            finding.evidence, finding.remediation,
+            finding.source_tool, finding.risk_score, json.dumps(finding.risk_factors),
+            finding.first_seen, finding.last_seen, finding.created_at,
+            1 if finding.verified else 0, finding.status
         ))
+
+        # Record source tool provenance
+        for tool in (finding.source_tools or [finding.source_tool]):
+            if tool:
+                conn.execute("""
+                    INSERT OR IGNORE INTO finding_sources (finding_id, tool_name)
+                    VALUES (?, ?)
+                """, (finding.id, tool))
+
     return finding.id
 
-def get_all_findings(target: Optional[str] = None, severity: Optional[str] = None) -> List[Dict[str, Any]]:
-    """Retrieve findings with optional filtering."""
+
+def get_finding(finding_id: str) -> Optional[Dict[str, Any]]:
+    """Retrieve finding by ID with all sources and evidence."""
+    db = get_db()
+    with db.get_connection() as conn:
+        row = conn.execute("SELECT * FROM findings WHERE id = ?", (finding_id,)).fetchone()
+        if not row:
+            return None
+        d = dict(row)
+        # Fetch sources
+        sources_rows = conn.execute(
+            "SELECT tool_name, discovered_at FROM finding_sources WHERE finding_id = ?",
+            (finding_id,)
+        ).fetchall()
+        d["source_tools"] = [r["tool_name"] for r in sources_rows] if sources_rows else [d.get("source_tool", "CYBERWOLF")]
+        return d
+
+
+def update_finding_status(finding_id: str, new_status: str, verified: Optional[bool] = None) -> bool:
+    """Update status of a finding (OPEN, CONFIRMED, FALSE_POSITIVE, RESOLVED, ACCEPTED_RISK)."""
+    norm_status = FindingStatus.normalize(new_status)
+    db = get_db()
+    with db.get_connection() as conn:
+        cur = conn.cursor()
+        if verified is not None:
+            cur.execute("""
+                UPDATE findings
+                SET status = ?, verified = ?, last_seen = CURRENT_TIMESTAMP
+                WHERE id = ?
+            """, (norm_status, 1 if verified else 0, finding_id))
+        else:
+            cur.execute("""
+                UPDATE findings
+                SET status = ?, last_seen = CURRENT_TIMESTAMP
+                WHERE id = ?
+            """, (norm_status, finding_id))
+        return cur.rowcount > 0
+
+
+def get_all_findings(target: Optional[str] = None, severity: Optional[str] = None,
+                     status: Optional[str] = None, cve: Optional[str] = None,
+                     limit: int = 500) -> List[Dict[str, Any]]:
+    """Retrieve findings with multi-criteria filtering."""
     db = get_db()
     query = "SELECT * FROM findings WHERE 1=1"
     params = []
     if target:
-        query += " AND target LIKE ?"
-        params.append(f"%{target}%")
+        query += " AND (target LIKE ? OR host LIKE ?)"
+        params.extend([f"%{target}%", f"%{target}%"])
     if severity:
         query += " AND severity = ?"
         params.append(severity.upper())
-    query += " ORDER BY CASE severity WHEN 'CRITICAL' THEN 1 WHEN 'HIGH' THEN 2 WHEN 'MEDIUM' THEN 3 WHEN 'LOW' THEN 4 ELSE 5 END, created_at DESC"
-    
+    if status:
+        query += " AND status = ?"
+        params.append(status.upper())
+    if cve:
+        query += " AND (cve LIKE ? OR cve_ids LIKE ?)"
+        params.extend([f"%{cve}%", f"%{cve}%"])
+
+    query += """
+        ORDER BY
+            CASE severity
+                WHEN 'CRITICAL' THEN 1
+                WHEN 'HIGH' THEN 2
+                WHEN 'MEDIUM' THEN 3
+                WHEN 'LOW' THEN 4
+                ELSE 5
+            END,
+            risk_score DESC,
+            created_at DESC
+        LIMIT ?
+    """
+    params.append(limit)
+
     with db.get_connection() as conn:
         rows = conn.execute(query, params).fetchall()
-        return [dict(r) for r in rows]
+        results = []
+        for r in rows:
+            d = dict(r)
+            if not d.get("title") and d.get("vulnerability"):
+                d["title"] = d["vulnerability"]
+            results.append(d)
+        return results
+
 
 def get_findings_summary() -> Dict[str, int]:
     """Return count of findings grouped by severity."""
     db = get_db()
     counts = {"CRITICAL": 0, "HIGH": 0, "MEDIUM": 0, "LOW": 0, "INFO": 0, "TOTAL": 0}
     with db.get_connection() as conn:
-        rows = conn.execute("SELECT severity, COUNT(*) as cnt FROM findings GROUP BY severity").fetchall()
+        rows = conn.execute(
+            "SELECT severity, COUNT(*) as cnt FROM findings GROUP BY severity"
+        ).fetchall()
         for r in rows:
-            sev = r["severity"].upper()
+            sev = (r["severity"] or "INFO").upper()
             if sev in counts:
                 counts[sev] = r["cnt"]
                 counts["TOTAL"] += r["cnt"]
     return counts
 
+
+# ---------------------------------------------------------------------------
+# EVIDENCE & TOOL RUNS
+# ---------------------------------------------------------------------------
+
+def create_evidence(evidence: Evidence) -> str:
+    """Store structured, hashed evidence linked to findings and scans."""
+    db = get_db()
+    # Compute sha256 hash if not already computed
+    if not evidence.hash_sha256 and evidence.output_excerpt:
+        evidence.hash_sha256 = hashlib.sha256(evidence.output_excerpt.encode("utf-8")).hexdigest()
+
+    with db.get_connection() as conn:
+        conn.execute("""
+            INSERT OR REPLACE INTO evidence (
+                id, target, tool_name, output_excerpt, command_used,
+                finding_id, scan_id, timestamp, raw_result_path,
+                packet_metadata, http_metadata, scanner_result, hash_sha256
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (
+            evidence.id, evidence.target, evidence.tool_name, evidence.output_excerpt,
+            evidence.command_used, evidence.finding_id, evidence.scan_id,
+            evidence.timestamp, evidence.raw_result_path,
+            json.dumps(evidence.packet_metadata), json.dumps(evidence.http_metadata),
+            json.dumps(evidence.scanner_result), evidence.hash_sha256
+        ))
+    return evidence.id
+
+
+def get_evidence(evidence_id: str) -> Optional[Dict[str, Any]]:
+    """Retrieve specific evidence record by ID."""
+    db = get_db()
+    with db.get_connection() as conn:
+        row = conn.execute("SELECT * FROM evidence WHERE id = ?", (evidence_id,)).fetchone()
+        return dict(row) if row else None
+
+
+def get_evidence_by_scan(scan_id: str) -> List[Dict[str, Any]]:
+    """Retrieve all evidence collected during a scan."""
+    db = get_db()
+    with db.get_connection() as conn:
+        rows = conn.execute(
+            "SELECT * FROM evidence WHERE scan_id = ? ORDER BY timestamp ASC", (scan_id,)
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+
+def get_evidence_by_finding(finding_id: str) -> List[Dict[str, Any]]:
+    """Retrieve all evidence associated with a specific finding."""
+    db = get_db()
+    with db.get_connection() as conn:
+        rows = conn.execute(
+            "SELECT * FROM evidence WHERE finding_id = ? ORDER BY timestamp ASC", (finding_id,)
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+
+def record_tool_run(tool_run: ToolRun) -> str:
+    """Record an individual tool execution instance."""
+    db = get_db()
+    with db.get_connection() as conn:
+        conn.execute("""
+            INSERT OR REPLACE INTO tool_runs (
+                id, scan_id, tool_name, command_line, exit_code,
+                start_time, end_time, duration_sec, stdout_excerpt,
+                stderr_excerpt, raw_output_path, hash_sha256, status
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (
+            tool_run.id, tool_run.scan_id, tool_run.tool_name,
+            tool_run.command_line, tool_run.exit_code,
+            tool_run.start_time, tool_run.end_time, tool_run.duration_sec,
+            tool_run.stdout_excerpt, tool_run.stderr_excerpt,
+            tool_run.raw_output_path, tool_run.hash_sha256, tool_run.status
+        ))
+    return tool_run.id
+
+
+def get_tool_runs(scan_id: Optional[str] = None) -> List[Dict[str, Any]]:
+    """Retrieve tool run history."""
+    db = get_db()
+    with db.get_connection() as conn:
+        if scan_id:
+            rows = conn.execute(
+                "SELECT * FROM tool_runs WHERE scan_id = ? ORDER BY start_time ASC", (scan_id,)
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                "SELECT * FROM tool_runs ORDER BY start_time DESC LIMIT 100"
+            ).fetchall()
+        return [dict(r) for r in rows]
+
+
 def save_tool_output(tool_name: str, raw_output: str, scan_id: Optional[str] = None,
                      command_line: Optional[str] = None, exit_code: int = 0,
                      structured_json: Optional[Dict[str, Any]] = None):
-    """Persist raw output from security tools."""
+    """Persist raw output from security tools (backward compatible)."""
     db = get_db()
     with db.get_connection() as conn:
         conn.execute("""
@@ -145,16 +504,84 @@ def save_tool_output(tool_name: str, raw_output: str, scan_id: Optional[str] = N
             VALUES (?, ?, ?, ?, ?, ?)
         """, (scan_id, tool_name, command_line, exit_code, raw_output, json.dumps(structured_json or {})))
 
+
+# ---------------------------------------------------------------------------
+# AUDIT & AI LOGS
+# ---------------------------------------------------------------------------
+
+def record_audit_event(event: AuditEvent) -> int:
+    """Insert structured audit event."""
+    db = get_db()
+    with db.get_connection() as conn:
+        cur = conn.cursor()
+        cur.execute("""
+            INSERT INTO audit_logs (
+                event_type, user_action, target, tool_name, mode, decision, details, timestamp
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        """, (
+            event.event_type, event.user_action, event.target,
+            event.tool_name, event.mode, event.decision, event.details,
+            event.timestamp or datetime.now().isoformat()
+        ))
+        return cur.lastrowid
+
+
+def get_audit_events(limit: int = 100, event_type: Optional[str] = None) -> List[Dict[str, Any]]:
+    """Retrieve audit events in reverse chronological order."""
+    db = get_db()
+    with db.get_connection() as conn:
+        if event_type:
+            rows = conn.execute(
+                "SELECT * FROM audit_logs WHERE event_type = ? ORDER BY timestamp DESC LIMIT ?",
+                (event_type, limit)
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                "SELECT * FROM audit_logs ORDER BY timestamp DESC LIMIT ?", (limit,)
+            ).fetchall()
+        return [dict(r) for r in rows]
+
+
 def save_ai_analysis(specialist_role: str, model_name: str, analysis_text: str,
                      recommendations: Optional[str] = None, scan_id: Optional[str] = None,
                      finding_id: Optional[str] = None, confidence_score: float = 0.95):
-    """Save an AI analysis response for persistence and RAG."""
+    """Save an AI analysis response for persistence and RAG (backward compatible)."""
     db = get_db()
     with db.get_connection() as conn:
         conn.execute("""
-            INSERT INTO ai_analyses (scan_id, finding_id, specialist_role, model_name, analysis_text, recommendations, confidence_score)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO ai_analyses (
+                scan_id, finding_id, specialist_role, model_name,
+                analysis_text, recommendations, confidence_score
+            ) VALUES (?, ?, ?, ?, ?, ?, ?)
         """, (scan_id, finding_id, specialist_role, model_name, analysis_text, recommendations, confidence_score))
+
+
+def get_all_reports(limit: int = 50, target: Optional[str] = None) -> List[Dict[str, Any]]:
+    """Retrieve generated report deliverables."""
+    db = get_db()
+    with db.get_connection() as conn:
+        if target:
+            rows = conn.execute(
+                "SELECT * FROM reports WHERE target = ? ORDER BY created_at DESC LIMIT ?", (target, limit)
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                "SELECT * FROM reports ORDER BY created_at DESC LIMIT ?", (limit,)
+            ).fetchall()
+        return [dict(r) for r in rows]
+
+
+def get_report(report_id: str) -> Optional[Dict[str, Any]]:
+    """Retrieve specific report record by ID."""
+    db = get_db()
+    with db.get_connection() as conn:
+        row = conn.execute("SELECT * FROM reports WHERE id = ?", (report_id,)).fetchone()
+        return dict(row) if row else None
+
+
+# ---------------------------------------------------------------------------
+# SYSTEM STATUS & EXPORT
+# ---------------------------------------------------------------------------
 
 def get_database_status() -> Dict[str, Any]:
     """Return diagnostic metrics about the local SQLite database."""
@@ -167,28 +594,33 @@ def get_database_status() -> Dict[str, Any]:
         tools_cnt = conn.execute("SELECT COUNT(*) FROM tool_outputs").fetchone()[0]
         ai_cnt = conn.execute("SELECT COUNT(*) FROM ai_analyses").fetchone()[0]
         reports_cnt = conn.execute("SELECT COUNT(*) FROM reports").fetchone()[0]
+        assets_cnt = conn.execute("SELECT COUNT(*) FROM assets").fetchone()[0]
+        evidence_cnt = conn.execute("SELECT COUNT(*) FROM evidence").fetchone()[0]
 
     return {
         "db_path": str(db.db_path),
         "db_size_bytes": db.db_path.stat().st_size if db.db_path.exists() else 0,
+        "assets": assets_cnt,
         "hosts": hosts_cnt,
         "ports": ports_cnt,
         "findings": findings_cnt,
         "scans": scans_cnt,
         "tool_outputs": tools_cnt,
+        "evidence": evidence_cnt,
         "ai_analyses": ai_cnt,
         "reports": reports_cnt
     }
+
 
 def search_database(term: str) -> Dict[str, List[Dict[str, Any]]]:
     """Full-text search across findings, hosts, and AI analyses."""
     db = get_db()
     pattern = f"%{term}%"
     results = {"findings": [], "hosts": [], "ai_analyses": []}
-    
+
     with db.get_connection() as conn:
         f_rows = conn.execute("""
-            SELECT * FROM findings 
+            SELECT * FROM findings
             WHERE vulnerability LIKE ? OR evidence LIKE ? OR target LIKE ? OR cve LIKE ?
         """, (pattern, pattern, pattern, pattern)).fetchall()
         results["findings"] = [dict(r) for r in f_rows]
@@ -205,16 +637,19 @@ def search_database(term: str) -> Dict[str, List[Dict[str, Any]]]:
 
     return results
 
+
 def export_database_json() -> Dict[str, Any]:
     """Export complete database contents to structured dictionary."""
     db = get_db()
     with db.get_connection() as conn:
         return {
             "exported_at": datetime.now().isoformat(),
+            "assets": [dict(r) for r in conn.execute("SELECT * FROM assets").fetchall()],
             "hosts": [dict(r) for r in conn.execute("SELECT * FROM hosts").fetchall()],
             "ports": [dict(r) for r in conn.execute("SELECT * FROM ports").fetchall()],
             "findings": [dict(r) for r in conn.execute("SELECT * FROM findings").fetchall()],
             "scans": [dict(r) for r in conn.execute("SELECT * FROM scans").fetchall()],
+            "evidence": [dict(r) for r in conn.execute("SELECT * FROM evidence").fetchall()],
             "reports": [dict(r) for r in conn.execute("SELECT * FROM reports").fetchall()],
             "ai_analyses": [dict(r) for r in conn.execute("SELECT * FROM ai_analyses").fetchall()]
         }

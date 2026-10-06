@@ -1,0 +1,10 @@
+- Nikto v2.5.0
++ Target IP:          192.168.1.100
++ Target Hostname:    sec-lab.target.local
++ Target Port:        80
++ Server: Apache/2.4.41 (Ubuntu)
++ /: The anti-clickjacking X-Frame-Options header is not present. See: https://developer.mozilla.org/en-US/docs/Web/HTTP/Headers/X-Frame-Options
++ /: The X-Content-Type-Options header is not set. This could allow the user agent to render the content of the site in a different fashion to the MIME type.
++ /admin/: Directory indexing found.
++ /phpinfo.php: Output from the phpinfo() function was found.
++ 7890 requests: 0 error(s) and 4 item(s) reported on remote host

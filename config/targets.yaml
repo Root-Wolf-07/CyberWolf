@@ -1,55 +1,52 @@
-# Authorized Target Scopes
-# Only targets listed here or confirmed interactively under authorized scopes can be assessed.
-scopes:
-  - id: "local-loopback"
-    name: "Localhost Development & Testing"
-    type: "ip"
-    targets:
-      - "127.0.0.1"
-      - "::1"
-      - "localhost"
-    allowed_operations:
-      - "network_scan"
-      - "vuln_scan"
-      - "web_assessment"
-      - "sql_test"
-      - "bug_discovery"
-      - "traffic_monitoring"
-    risk_level: "low"
-
-  - id: "lab-network"
-    name: "Authorized Security Lab Subnet"
-    type: "cidr"
-    targets:
-      - "192.168.1.0/24"
-      - "10.0.0.0/24"
-      - "172.16.0.0/24"
-    allowed_operations:
-      - "network_scan"
-      - "vuln_scan"
-      - "web_assessment"
-      - "sql_test"
-      - "bug_discovery"
-      - "traffic_monitoring"
-      - "pentest_validation"
-    risk_level: "medium"
-
-  - id: "test-domains"
-    name: "Local Security Lab Test Hosts"
-    type: "domain"
-    targets:
-      - "testphp.vulnweb.com"
-      - "demo.testfire.net"
-      - "scanme.nmap.org"
-    allowed_operations:
-      - "network_scan"
-      - "vuln_scan"
-      - "web_assessment"
-    risk_level: "medium"
-
 excluded_targets:
-  - "8.8.8.8"
-  - "1.1.1.1"
-  - "*.gov"
-  - "*.mil"
-  - "*.edu"
+- 8.8.8.8
+- 1.1.1.1
+- '*.gov'
+- '*.mil'
+- '*.edu'
+scopes:
+- allowed_operations:
+  - network_scan
+  - vuln_scan
+  - web_assessment
+  - sql_test
+  - bug_discovery
+  - traffic_monitoring
+  id: local-loopback
+  name: Localhost Development & Testing
+  risk_level: low
+  targets:
+  - 127.0.0.1
+  - ::1
+  - localhost
+  - 172.28.0.42
+  type: ip
+- allowed_operations:
+  - network_scan
+  - vuln_scan
+  - web_assessment
+  - sql_test
+  - bug_discovery
+  - traffic_monitoring
+  - pentest_validation
+  id: lab-network
+  name: Authorized Security Lab Subnet
+  risk_level: medium
+  targets:
+  - 192.168.1.0/24
+  - 10.0.0.0/24
+  - 172.16.0.0/24
+  - 192.168.1.100
+  type: cidr
+- allowed_operations:
+  - network_scan
+  - vuln_scan
+  - web_assessment
+  id: test-domains
+  name: Local Security Lab Test Hosts
+  risk_level: medium
+  targets:
+  - testphp.vulnweb.com
+  - demo.testfire.net
+  - scanme.nmap.org
+  type: domain

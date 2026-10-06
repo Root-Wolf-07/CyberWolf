@@ -98,3 +98,18 @@ def audit_log(event_type: str, action: str, target: Optional[str] = None,
     payload = f'"event_type": "{event_type}", "action": "{action}", "target": "{safe_target}", "tool": "{safe_tool}", "decision": "{decision}", "details": "{safe_details}"'
     if _AUDIT_LOGGER:
         _AUDIT_LOGGER.info(payload)
+
+    # Persist to SQLite audit_logs table
+    try:
+        from app.database.models import AuditEvent
+        from app.database.operations import record_audit_event
+        record_audit_event(AuditEvent(
+            event_type=event_type,
+            user_action=action,
+            target=safe_target if safe_target != "N/A" else None,
+            tool_name=safe_tool if safe_tool != "N/A" else None,
+            decision=decision,
+            details=safe_details if safe_details != "N/A" else None
+        ))
+    except Exception:
+        pass

@@ -44,7 +44,8 @@ class DatabaseManager:
                 conn.close()
 
     def init_schema(self):
-        """Execute schema.sql to ensure all tables, indexes, and constraints exist."""
+        """Execute schema.sql and apply all pending migrations safely."""
+        from app.database.migrations import apply_migrations
         schema_file = self.config.base_dir / "database" / "schema.sql"
         if not schema_file.exists():
             raise DatabaseError(f"Schema file not found at {schema_file}")
@@ -55,7 +56,8 @@ class DatabaseManager:
 
             with self.get_connection() as conn:
                 conn.executescript(schema_sql)
-            self.logger.info(f"Database schema initialized successfully at {self.db_path}")
+                apply_migrations(conn)
+            self.logger.info(f"Database schema & migrations applied successfully at {self.db_path}")
         except Exception as e:
             self.logger.error(f"Failed to initialize schema: {e}")
             raise DatabaseError(f"Failed to initialize database schema: {e}") from e
